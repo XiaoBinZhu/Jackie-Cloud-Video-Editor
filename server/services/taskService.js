@@ -55,7 +55,7 @@ export async function createTask({ settings, segments, segmentDuration, taskIdPr
   validateTaskParams({ settings, segments, segmentDuration });
 
   const finalSegmentDuration = segmentDuration || VIDEO_DEFAULTS.segmentDuration;
-  
+
   // 生成任务 ID
   const taskId = `${taskIdPrefix}${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
   const startTime = Date.now();

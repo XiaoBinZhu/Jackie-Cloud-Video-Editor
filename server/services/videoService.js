@@ -98,14 +98,6 @@ export async function createVideoTask(taskId, settings, timeline, tempFiles = []
               const base64String = videoBuffer.toString('base64');
               const mimeType = settings.format === 'webm' ? 'video/webm' : 'video/mp4';
               completeTask.base64Data = `data:${mimeType};base64,${base64String}`;
-              
-              // Base64 转换成功后，删除输出视频文件
-              try {
-                fs.unlinkSync(file);
-                logger.withTaskId(taskId).info(`已删除输出视频文件: ${file}`);
-              } catch (deleteError) {
-                logger.withTaskId(taskId).warn(`删除输出视频文件失败: ${deleteError.message}`);
-              }
             }
           } catch (error) {
             logger.withTaskId(taskId).warn(`Base64 转换失败: ${error.message}`);
@@ -171,11 +163,18 @@ export function getTaskResult(taskId) {
     };
   }
 
+  // Base64 转换成功后，删除输出视频文件
+  try {
+    fs.unlinkSync(task.outputFile);
+    logger.withTaskId(taskId).info(`已删除输出视频文件: ${task.outputFile}`);
+  } catch (deleteError) {
+    logger.withTaskId(taskId).warn(`删除输出视频文件失败: ${deleteError.message}`);
+  }
   return {
     success: true,
     taskId,
-    data: task.base64Data,
-    outputFile: task.outputFile ? `/output/${path.basename(task.outputFile)}` : null,
+    mergedVideoUrl: task.base64Data,
+    outputFile: task.outputFile ? `${path.basename(task.outputFile)}` : null,
     message: '视频合成完成'
   };
 }
