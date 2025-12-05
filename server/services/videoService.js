@@ -9,6 +9,7 @@ import fs from 'fs';
 import { cleanupFiles } from '../utils/fileUtils.js';
 import { cleanupTaskDirectory } from '../utils/cleanup.js';
 import { logger } from '../utils/logger.js';
+import { ensureVideoMetadata } from '../render/videoUtils.js';
 
 // 存储任务状态
 const videoTasks = new Map();
@@ -82,7 +83,7 @@ export async function createVideoTask(taskId, settings, timeline, tempFiles = []
           });
         }
       },
-      onComplete: (file) => {
+      onComplete: async (file) => {
         const completeTask = videoTasks.get(taskId);
         if (completeTask) {
           completeTask.status = 'completed';
@@ -91,13 +92,50 @@ export async function createVideoTask(taskId, settings, timeline, tempFiles = []
           completeTask.outputFile = file;
           completeTask.lastUpdate = Date.now();
 
-          // 读取视频文件并转换为 Base64
+          // 在转换为 Base64 之前，确保视频包含正确的元数据（特别是时长信息）
+          let finalVideoFile = file;
           try {
             if (fs.existsSync(file)) {
-              const videoBuffer = fs.readFileSync(file);
+              logger.withTaskId(taskId).info('开始处理视频元数据，确保时长信息正确...');
+
+              // 创建临时文件路径用于元数据处理
+              const tempMetadataFile = file.replace(/(\.[^.]+)$/, '_metadata$1');
+
+              // 处理视频元数据
+              finalVideoFile = await ensureVideoMetadata(file, tempMetadataFile);
+
+              if (finalVideoFile !== file && fs.existsSync(finalVideoFile)) {
+                // 如果生成了新文件，删除原文件并使用新文件
+                try {
+                  if (fs.existsSync(file)) {
+                    fs.unlinkSync(file);
+                    logger.withTaskId(taskId).debug(`已删除原视频文件: ${file}`);
+                  }
+                  // 将处理后的文件移动到原位置
+                  fs.renameSync(finalVideoFile, file);
+                  finalVideoFile = file;
+                  logger.withTaskId(taskId).info('视频元数据处理完成，已替换原文件');
+                } catch (err) {
+                  logger.withTaskId(taskId).warn(`文件替换失败: ${err.message}，使用处理后的文件`);
+                }
+              } else {
+                logger.withTaskId(taskId).info('视频元数据处理完成（使用原文件）');
+              }
+            }
+          } catch (error) {
+            logger.withTaskId(taskId).warn(`视频元数据处理失败: ${error.message}，使用原文件`);
+            // 元数据处理失败不影响后续流程，继续使用原文件
+            finalVideoFile = file;
+          }
+
+          // 读取视频文件并转换为 Base64
+          try {
+            if (fs.existsSync(finalVideoFile)) {
+              const videoBuffer = fs.readFileSync(finalVideoFile);
               const base64String = videoBuffer.toString('base64');
               const mimeType = settings.format === 'webm' ? 'video/webm' : 'video/mp4';
               completeTask.base64Data = `data:${mimeType};base64,${base64String}`;
+              logger.withTaskId(taskId).info('Base64 转换完成');
             }
           } catch (error) {
             logger.withTaskId(taskId).warn(`Base64 转换失败: ${error.message}`);
@@ -164,12 +202,12 @@ export function getTaskResult(taskId) {
   }
 
   // Base64 转换成功后，删除输出视频文件
-  try {
-    fs.unlinkSync(task.outputFile);
-    logger.withTaskId(taskId).info(`已删除输出视频文件: ${task.outputFile}`);
-  } catch (deleteError) {
-    logger.withTaskId(taskId).warn(`删除输出视频文件失败: ${deleteError.message}`);
-  }
+  // try {
+  //   fs.unlinkSync(task.outputFile);
+  //   logger.withTaskId(taskId).info(`已删除输出视频文件: ${task.outputFile}`);
+  // } catch (deleteError) {
+  //   logger.withTaskId(taskId).warn(`删除输出视频文件失败: ${deleteError.message}`);
+  // }
   return {
     success: true,
     taskId,

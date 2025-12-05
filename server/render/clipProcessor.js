@@ -328,9 +328,10 @@ export function processImageClip(clip, canvasWidth, canvasHeight, segmentDuratio
  * @param {number} canvasWidth - 画布宽度
  * @param {number} canvasHeight - 画布高度
  * @param {number} segmentDuration - 片段持续时间
+ * @param {Object|null} videoContentArea - 视频内容区域 {x, y, width, height}，用于 contain 模式下的字幕定位
  * @returns {FFText} FFText 实例
  */
-export function processTextClip(clip, canvasWidth, canvasHeight, segmentDuration) {
+export function processTextClip(clip, canvasWidth, canvasHeight, segmentDuration, videoContentArea = null) {
   const textContent = clip.name || clip.asset_src || 'Text';
 
   // 获取字幕样式
@@ -345,53 +346,204 @@ export function processTextClip(clip, canvasWidth, canvasHeight, segmentDuration
   const transformX = clip.filters?.transform?.x ?? null;
   const transformY = clip.filters?.transform?.y ?? null;
 
-  // 估算文本尺寸
-  const estimatedTextHeight = fontSize + strokeWidth * 2 + 10;
-  const estimatedTextWidth = textContent.length * fontSize * 0.6;
+  // 计算行高（用于多行文本高度计算）
+  const lineHeight = fontSize * 1.2;
 
-  // 计算字幕位置
-  // 所有位置计算都基于画布尺寸（canvasWidth/canvasHeight），确保文本位置固定相对于画布
-  // 关键：无论视频是否填充满画布，文本都应该基于画布坐标定位
-  let x, y;
+  // 关键修复：在 contain 模式下，如果有 videoContentArea，使用视频内容区域的宽度
+  // 否则使用画布宽度
+  const contentWidth = videoContentArea ? videoContentArea.width : canvasWidth;
+  const contentHeight = videoContentArea ? videoContentArea.height : canvasHeight;
+  const contentX = videoContentArea ? videoContentArea.x : 0;
+  const contentY = videoContentArea ? videoContentArea.y : 0;
 
-  // 水平位置
-  if (transformX === null || transformX === undefined || transformX === 50) {
-    // 默认：画布宽度居中
-    x = Math.round((canvasWidth - estimatedTextWidth) / 2);
-  } else {
-    // 使用传入的位置值（基于画布宽度）
-    x = Math.round((transformX / 100) * canvasWidth);
-  }
+  // 设置文字换行宽度（左右各留20px边距）
+  const wordWrapWidth = contentWidth - 40;
+  const wordWrapMargin = 20;
 
-  // 垂直位置
-  if (transformY === null || transformY === undefined) {
-    // 默认：画布底部中间（底部往上一定距离，确保文本在画布底部中间区域）
-    // 使用画布高度的底部位置，而不是视频内容的底部
-    const bottomMargin = 50; // 底部边距（像素）
-    y = Math.round(canvasHeight - bottomMargin - estimatedTextHeight);
-    // 确保 y 值不会为负数
-    y = Math.max(0, y);
-  } else if (transformY === 50) {
-    // 画布垂直居中
-    y = Math.round((canvasHeight - estimatedTextHeight) / 2);
-  } else if (transformY >= 90) {
-    // 底部对齐（基于画布高度）
-    const targetBottomY = (transformY / 100) * canvasHeight;
-    y = Math.round(targetBottomY - estimatedTextHeight);
-    y = Math.max(0, y);
-  } else {
-    // 使用传入的位置值（基于画布高度）
-    y = Math.round((transformY / 100) * canvasHeight);
-  }
-
-  // 关键修复：确保文本坐标绝对相对于画布，而不是视频内容
-  // 在 contain 模式下，视频内容可能只占画布的一部分（有黑边）
-  // 文本必须使用绝对画布坐标，而不是相对于视频内容的坐标
+  // 关键修复：先创建 FFText 对象并设置样式，然后获取实际尺寸
   const text = new FFText({
     text: textContent,
     fontSize,
     color: fontColor,
   });
+
+  // 设置样式（必须在获取尺寸之前设置）
+  try {
+    text.setStyle({
+      fill: fontColor,
+      fontSize,
+      fontFamily: 'Arial, Helvetica, sans-serif',
+      fontWeight: fontWeight === 'bold' ? 'bold' : 'normal',
+      stroke: strokeColor,
+      strokeThickness: strokeWidth,
+      wordWrap: true,
+      wordWrapWidth: wordWrapWidth,
+      breakWords: true,  // 添加：强制允许在字符内部换行，确保中文文本能够换行
+      lineHeight: lineHeight,
+    });
+
+    // 尝试使用单独的方法设置换行宽度（如果方法存在）
+    if (typeof text.setWordWrapWidth === 'function') {
+      try {
+        text.setWordWrapWidth(wordWrapWidth);
+        logger.debug(`[文字处理] 使用 setWordWrapWidth 方法设置换行宽度: ${wordWrapWidth}`);
+      } catch (e) {
+        logger.debug(`[文字处理] setWordWrapWidth 方法不存在或失败: ${e.message}`);
+      }
+    }
+
+    logger.debug(`[文字处理] 设置换行: wordWrap=true, wordWrapWidth=${wordWrapWidth}, breakWords=true, 内容宽度=${contentWidth}`);
+  } catch (e) {
+    logger.warn(`设置文字样式失败: ${e.message}`);
+    // 如果设置失败，尝试不设置 wordWrap 相关属性
+    try {
+      text.setStyle({
+        fill: fontColor,
+        fontSize,
+        fontFamily: 'Arial, Helvetica, sans-serif',
+        fontWeight: fontWeight === 'bold' ? 'bold' : 'normal',
+        stroke: strokeColor,
+        strokeThickness: strokeWidth,
+      });
+      logger.warn(`[文字处理] 已设置基础文字样式，但换行设置失败`);
+    } catch (e2) {
+      logger.warn(`设置基础文字样式也失败: ${e2.message}`);
+    }
+  }
+
+  // 获取文本实际尺寸（考虑换行后的多行高度）
+  let singleLineWidth, actualDisplayWidth, actualTextHeight;
+  try {
+    // 关键修复：先获取单行文本宽度（不考虑换行）
+    if (typeof text.getTextWidth === 'function') {
+      singleLineWidth = text.getTextWidth();
+    } else {
+      // 如果方法不存在，使用估算值
+      singleLineWidth = textContent.length * fontSize * 0.6;
+    }
+
+    // 关键修复：加上描边宽度（描边会在文本两侧各增加 strokeWidth）
+    // getTextWidth() 可能不包含描边宽度，需要手动加上
+    singleLineWidth = singleLineWidth + 2 * strokeWidth;
+
+    // 判断是否需要换行，确定实际显示宽度
+    // 如果单行宽度（包含描边） <= wordWrapWidth，文本不需要换行，使用单行宽度
+    // 如果单行宽度（包含描边） > wordWrapWidth，文本会换行，实际显示宽度就是 wordWrapWidth
+    if (singleLineWidth <= wordWrapWidth) {
+      actualDisplayWidth = singleLineWidth;
+    } else {
+      actualDisplayWidth = wordWrapWidth;
+    }
+
+    logger.debug(`[文字处理] 单行宽度(含描边): ${singleLineWidth}, 换行宽度: ${wordWrapWidth}, 实际显示宽度: ${actualDisplayWidth}`);
+
+    if (typeof text.getTextHeight === 'function') {
+      actualTextHeight = text.getTextHeight();
+    } else {
+      // 如果方法不存在，估算多行高度
+      // 计算需要多少行（使用包含描边的宽度）
+      const estimatedLines = Math.ceil(singleLineWidth / wordWrapWidth);
+      // 计算总高度（至少1行，最多按实际行数，预留2行）
+      const maxLines = Math.max(estimatedLines, 2);
+      actualTextHeight = maxLines * lineHeight + strokeWidth * 2;
+    }
+  } catch (e) {
+    logger.warn(`获取文本尺寸失败: ${e.message}，使用估算值`);
+    // 如果获取失败，使用估算值，也要加上描边宽度
+    singleLineWidth = textContent.length * fontSize * 0.6 + 2 * strokeWidth;
+    // 判断是否需要换行
+    if (singleLineWidth <= wordWrapWidth) {
+      actualDisplayWidth = singleLineWidth;
+    } else {
+      actualDisplayWidth = wordWrapWidth;
+    }
+    const estimatedLines = Math.ceil(singleLineWidth / wordWrapWidth);
+    const maxLines = Math.max(estimatedLines, 2);
+    actualTextHeight = maxLines * lineHeight + strokeWidth * 2;
+  }
+
+  // 预留2行文字的高度（用于底部位置计算）
+  const reservedHeight = lineHeight * 2;
+  const finalTextHeight = Math.max(actualTextHeight, reservedHeight);
+
+  // 计算字幕位置
+  // 关键修复：如果有 videoContentArea（contain 模式），基于视频内容区域定位
+  // 否则基于画布尺寸定位
+  let x, y;
+
+  // 水平位置
+  if (transformX === null || transformX === undefined || transformX === 50) {
+    // 默认：内容区域宽度居中（基于实际显示宽度）
+    // 如果有 videoContentArea，基于视频内容区域居中；否则基于画布居中
+    x = Math.round((contentWidth - actualDisplayWidth) / 2);
+    // 加上内容区域的 x 偏移（如果是视频内容区域）
+    x = x + contentX;
+
+    // 边界限制：如果有 videoContentArea，基于视频内容区域；否则基于画布
+    if (videoContentArea) {
+      // 基于视频内容区域的边界
+      const minX = contentX + wordWrapMargin;
+      const maxX = contentX + contentWidth - actualDisplayWidth - wordWrapMargin;
+      x = Math.max(minX, Math.min(x, maxX));
+    } else {
+      // 基于画布边界
+      x = Math.max(wordWrapMargin, Math.min(x, canvasWidth - actualDisplayWidth - wordWrapMargin));
+    }
+    logger.debug(`[文字处理] 居中计算: 内容宽度=${contentWidth}, 实际显示宽度=${actualDisplayWidth}, 内容X=${contentX}, x=${x}`);
+  } else {
+    // 使用传入的位置值
+    if (videoContentArea) {
+      // 如果有视频内容区域，位置相对于视频内容区域
+      x = Math.round((transformX / 100) * contentWidth) + contentX;
+      // 基于视频内容区域的边界限制
+      const minX = contentX + wordWrapMargin;
+      const maxX = contentX + contentWidth - actualDisplayWidth - wordWrapMargin;
+      x = Math.max(minX, Math.min(x, maxX));
+    } else {
+      // 否则相对于画布
+      x = Math.round((transformX / 100) * canvasWidth);
+      // 基于画布边界限制
+      x = Math.max(wordWrapMargin, Math.min(x, canvasWidth - actualDisplayWidth - wordWrapMargin));
+    }
+  }
+
+  // 垂直位置
+  if (transformY === null || transformY === undefined) {
+    // 默认：内容区域底部中间（底部往上一定距离，确保文本在内容区域底部中间区域）
+    // 关键修复：如果有 videoContentArea，使用视频内容区域的底部；否则使用画布底部
+    const bottomMargin = 50; // 底部边距（像素）
+    const contentBottom = contentY + contentHeight;
+    y = Math.round(contentBottom - bottomMargin - finalTextHeight);
+    // 确保 y 值不会为负数
+    y = Math.max(0, y);
+    logger.debug(`[文字处理] 底部定位: 内容Y=${contentY}, 内容高度=${contentHeight}, 内容底部=${contentBottom}, y=${y}`);
+  } else if (transformY === 50) {
+    // 内容区域垂直居中（基于实际文本高度）
+    const contentCenterY = contentY + contentHeight / 2;
+    y = Math.round(contentCenterY - finalTextHeight / 2);
+  } else if (transformY >= 90) {
+    // 底部对齐
+    if (videoContentArea) {
+      // 如果有视频内容区域，基于视频内容区域的底部
+      const contentBottom = contentY + contentHeight;
+      const targetBottomY = contentBottom - ((100 - transformY) / 100) * contentHeight;
+      y = Math.round(targetBottomY - finalTextHeight);
+    } else {
+      // 否则基于画布底部
+      const targetBottomY = (transformY / 100) * canvasHeight;
+      y = Math.round(targetBottomY - finalTextHeight);
+    }
+    y = Math.max(0, y);
+  } else {
+    // 使用传入的位置值
+    if (videoContentArea) {
+      // 如果有视频内容区域，位置相对于视频内容区域
+      y = Math.round((transformY / 100) * contentHeight) + contentY;
+    } else {
+      // 否则相对于画布
+      y = Math.round((transformY / 100) * canvasHeight);
+    }
+  }
 
   // 设置位置，确保位置是基于画布的绝对坐标
   try {
@@ -404,19 +556,6 @@ export function processTextClip(clip, canvasWidth, canvasHeight, segmentDuration
     }
   } catch (e) {
     logger.warn(`设置文字位置失败: ${e.message}`);
-  }
-
-  try {
-    text.setStyle({
-      fill: fontColor,
-      fontSize,
-      fontFamily: 'Arial, Helvetica, sans-serif',
-      fontWeight: fontWeight === 'bold' ? 'bold' : 'normal',
-      stroke: strokeColor,
-      strokeThickness: strokeWidth,
-    });
-  } catch (e) {
-    logger.warn(`设置文字样式失败: ${e.message}`);
   }
 
   // 添加文本动画效果（如果配置了）
@@ -448,6 +587,9 @@ export function processTextClip(clip, canvasWidth, canvasHeight, segmentDuration
   }
 
   text.setDuration(segmentDuration);
+
+  logger.debug(`[文字处理] 文本: "${textContent.substring(0, 20)}...", 单行宽度: ${singleLineWidth}, 实际显示宽度: ${actualDisplayWidth}, 高度: ${actualTextHeight}, 位置: (${x}, ${y}), 换行宽度: ${wordWrapWidth}`);
+
   return text;
 }
 

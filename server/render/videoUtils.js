@@ -520,3 +520,167 @@ export function preprocessVideoForPortrait(inputPath, canvasWidth, canvasHeight,
   });
 }
 
+/**
+ * 确保视频包含正确的元数据（特别是时长信息）
+ * 使用 FFmpeg 重新处理视频，确保元数据完整，以便 Base64 转换后播放器能正确显示时长
+ * @param {string} inputPath - 输入视频路径
+ * @param {string} outputPath - 输出视频路径（可选，如果不提供则覆盖原文件）
+ * @returns {Promise<string>} 处理后的视频路径
+ */
+export function ensureVideoMetadata(inputPath, outputPath = null) {
+  return new Promise((resolve, reject) => {
+    try {
+      // 如果未提供输出路径，使用临时文件
+      const finalOutputPath = outputPath || inputPath.replace(/(\.[^.]+)$/, '_metadata$1');
+      const shouldDeleteTemp = !outputPath;
+
+      // 获取 FFmpeg 路径
+      const ffmpegPath = process.env.FFMPEG_PATH || 'ffmpeg';
+
+      // 设置 fluent-ffmpeg 的 FFmpeg 路径
+      if (ffmpegPath && ffmpegPath !== 'ffmpeg') {
+        try {
+          ffmpeg.setFfmpegPath(ffmpegPath);
+          logger.debug(`[元数据修复] 设置 FFmpeg 路径: ${ffmpegPath}`);
+        } catch (e) {
+          logger.warn(`[元数据修复] 设置 FFmpeg 路径失败: ${e.message}`);
+        }
+      }
+
+      logger.info(`[元数据修复] 开始处理视频元数据: ${inputPath}`);
+      logger.info(`[元数据修复] 输出路径: ${finalOutputPath}`);
+
+      // 使用 fluent-ffmpeg 处理视频
+      // 使用 -c copy 复制流（不重新编码，速度快）
+      // 使用 -movflags +faststart 将元数据移到文件开头（便于流式播放）
+      // 使用 -fflags +genpts 生成时间戳（确保时长信息正确）
+      ffmpeg(inputPath)
+        .outputOptions([
+          '-c copy',           // 复制视频和音频流，不重新编码
+          '-movflags +faststart', // 将元数据移到文件开头，便于流式播放和 Base64 播放
+          '-fflags +genpts',   // 生成时间戳，确保时长信息正确
+          '-avoid_negative_ts make_zero' // 避免负时间戳
+        ])
+        .output(finalOutputPath)
+        .on('start', (commandLine) => {
+          logger.debug(`[元数据修复] FFmpeg 命令: ${commandLine}`);
+        })
+        .on('progress', (progress) => {
+          if (progress.percent) {
+            logger.debug(`[元数据修复] 进度: ${Math.round(progress.percent)}%`);
+          }
+        })
+        .on('end', () => {
+          logger.info(`[元数据修复] ✅ 视频元数据处理完成: ${finalOutputPath}`);
+
+          // 如果使用了临时文件，替换原文件
+          if (shouldDeleteTemp && finalOutputPath !== inputPath) {
+            try {
+              // 删除原文件
+              if (fs.existsSync(inputPath)) {
+                fs.unlinkSync(inputPath);
+                logger.debug(`[元数据修复] 已删除原文件: ${inputPath}`);
+              }
+              // 将临时文件移动到原文件位置
+              fs.renameSync(finalOutputPath, inputPath);
+              logger.debug(`[元数据修复] 已将处理后的文件移动到: ${inputPath}`);
+              resolve(inputPath);
+            } catch (err) {
+              logger.warn(`[元数据修复] ⚠️ 文件替换失败: ${err.message}，返回处理后的文件路径`);
+              resolve(finalOutputPath);
+            }
+          } else {
+            resolve(finalOutputPath);
+          }
+        })
+        .on('error', (err) => {
+          logger.error(`[元数据修复] ❌ 视频元数据处理失败: ${err.message}`);
+          // 处理失败，返回原路径
+          resolve(inputPath);
+        })
+        .run();
+    } catch (error) {
+      logger.error(`[元数据修复] ❌ 处理异常: ${error.message}`);
+      // 异常情况，返回原路径
+      resolve(inputPath);
+    }
+  });
+}
+
+/**
+ * 将视频与音频合并为单一视频文件
+ * @param {string} videoPath - 原始视频路径
+ * @param {string} audioPath - 音频路径
+ * @param {string|null} outputPath - 输出路径（可选，不传则在同目录生成 *_merged 文件）
+ * @returns {Promise<string>} 合并后的视频路径；合并失败时返回原视频路径
+ */
+export function mergeVideoWithAudio(videoPath, audioPath, outputPath = null) {
+  return new Promise((resolve) => {
+    try {
+      if (!videoPath || !audioPath) {
+        logger.warn('[合并音频] 缺少视频或音频路径，跳过合并');
+        resolve(videoPath);
+        return;
+      }
+
+      // 生成默认输出路径
+      if (!outputPath) {
+        const dir = path.dirname(videoPath);
+        const ext = path.extname(videoPath) || '.mp4';
+        const base = path.basename(videoPath, ext);
+        outputPath = path.join(dir, `${base}_merged${ext}`);
+      }
+
+      // 确保目录存在
+      const outDir = path.dirname(outputPath);
+      if (!fs.existsSync(outDir)) {
+        fs.mkdirSync(outDir, { recursive: true });
+      }
+
+      // 设置 FFmpeg 路径
+      const ffmpegPath = process.env.FFMPEG_PATH || 'ffmpeg';
+      if (ffmpegPath && ffmpegPath !== 'ffmpeg') {
+        try {
+          ffmpeg.setFfmpegPath(ffmpegPath);
+          logger.debug(`[合并音频] 设置 FFmpeg 路径: ${ffmpegPath}`);
+        } catch (e) {
+          logger.warn(`[合并音频] 设置 FFmpeg 路径失败: ${e.message}`);
+        }
+      }
+
+      logger.info(`[合并音频] 开始合并: 视频=${videoPath}, 音频=${audioPath}, 输出=${outputPath}`);
+
+      ffmpeg(videoPath)
+        .input(audioPath)
+        .outputOptions([
+          '-map 0:v:0',
+          '-map 1:a:0',
+          '-c:v copy',        // 不重新编码视频
+          '-c:a aac',         // 统一音频编码
+          '-shortest'         // 时长取较短，避免黑屏或静音尾巴
+        ])
+        .on('start', (commandLine) => {
+          logger.debug(`[合并音频] FFmpeg 命令: ${commandLine}`);
+        })
+        .on('progress', (progress) => {
+          if (progress.percent) {
+            logger.debug(`[合并音频] 进度: ${Math.round(progress.percent)}%`);
+          }
+        })
+        .on('end', () => {
+          logger.info(`[合并音频] ✅ 合并完成: ${outputPath}`);
+          resolve(outputPath);
+        })
+        .on('error', (err) => {
+          logger.error(`[合并音频] ❌ 合并失败: ${err.message}`);
+          // 合并失败，使用原视频继续流程，避免整体失败
+          resolve(videoPath);
+        })
+        .save(outputPath);
+    } catch (error) {
+      logger.error(`[合并音频] ❌ 合并异常: ${error.message}`);
+      resolve(videoPath);
+    }
+  });
+}
+

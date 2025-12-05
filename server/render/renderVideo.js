@@ -113,53 +113,8 @@ export async function renderVideo({
       creator.addChild(scene);
     });
 
-    onProgress(30, '正在处理音频...');
-
-    // 添加背景音乐（如果有传入音频文件）
-    if (audioClips.length > 0) {
-      taskLogger.info(`检测到 ${audioClips.length} 个音频文件，将使用传入的音频`);
-      for (const audioClip of audioClips) {
-        if (audioClip.asset_src) {
-          const absolutePath = resolveAssetPath(audioClip.asset_src);
-          if (absolutePath && !absolutePath.startsWith('http://') && !absolutePath.startsWith('https://')) {
-            taskLogger.debug(`添加背景音乐: ${audioClip.name}: ${absolutePath}`);
-            try {
-              creator.addAudio(absolutePath);
-            } catch (e) {
-              taskLogger.warn(`添加背景音乐失败: ${e.message}`);
-            }
-          }
-        }
-      }
-    } else {
-      // 如果没有传入音频文件，从第一个视频中提取音频
-      taskLogger.info(`未传入音频文件，将从视频中提取音频`);
-
-      // 找到第一个视频文件
-      let firstVideoPath = null;
-      for (const track of timeline.tracks || []) {
-        if (track.type === 'VIDEO' && track.clips && track.clips.length > 0) {
-          const firstClip = track.clips[0];
-          if (firstClip.asset_src) {
-            firstVideoPath = resolveAssetPath(firstClip.asset_src);
-            if (firstVideoPath && !firstVideoPath.startsWith('http://') && !firstVideoPath.startsWith('https://')) {
-              break;
-            }
-          }
-        }
-      }
-
-      if (firstVideoPath) {
-        taskLogger.info(`使用视频中的音频: ${firstVideoPath}`);
-        try {
-          creator.addAudio(firstVideoPath);
-        } catch (e) {
-          taskLogger.warn(`添加视频音频失败: ${e.message}`);
-        }
-      } else {
-        taskLogger.warn(`未找到视频文件，无法提取音频`);
-      }
-    }
+    // 音频已在片段阶段与视频合并，这里无需额外处理
+    onProgress(30, '音频已与视频合并，跳过独立音轨处理');
 
     onProgress(35, '正在启动渲染引擎...');
 

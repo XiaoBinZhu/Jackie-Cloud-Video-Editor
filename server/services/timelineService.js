@@ -2,8 +2,10 @@
  * 时间线构建服务
  * 从片段数据构建 FFCreatorLite 时间线
  */
+import path from 'path';
 import { downloadFromOSS, processText } from './ossService.js';
 import { getResolution } from '../utils/videoUtils.js';
+import { mergeVideoWithAudio } from '../render/videoUtils.js';
 import { DIRS } from '../config/config.js';
 
 /**
@@ -20,7 +22,6 @@ export async function buildTimelineFromSegments(segments, settings, defaultSegme
     const fitMode = settings.fitMode || 'contain';
 
     const videoClips = [];
-    const audioClips = [];
     const textClips = [];
     const tempFiles = []; // 记录临时文件，用于后续清理
 
@@ -40,6 +41,27 @@ export async function buildTimelineFromSegments(segments, settings, defaultSegme
         const videoPath = await downloadFromOSS(segment.video, 'video', i, taskId);
         tempFiles.push(videoPath);
 
+        let finalVideoPath = videoPath;
+
+        // 如果传入了独立音频，先与视频合并
+        if (segment.audio) {
+            const audioPath = await downloadFromOSS(segment.audio, 'audio', i, taskId);
+            tempFiles.push(audioPath);
+
+            const outputDir = taskId ? path.join(DIRS.uploads, taskId) : path.dirname(videoPath);
+            const mergedPath = path.join(
+                outputDir,
+                `segment_${i + 1}_merged_${Date.now()}${path.extname(videoPath) || '.mp4'}`
+            );
+
+            finalVideoPath = await mergeVideoWithAudio(videoPath, audioPath, mergedPath);
+
+            // 如果合并成功且生成了新文件，记录用于清理
+            if (finalVideoPath !== videoPath) {
+                tempFiles.push(finalVideoPath);
+            }
+        }
+
         // 视频默认居中显示，有传参才按传参的算
         const videoTransform = segment.transform || {
             x: 50, // 默认居中
@@ -50,7 +72,7 @@ export async function buildTimelineFromSegments(segments, settings, defaultSegme
         videoClips.push({
             id: `clip-video-${i}-${Date.now()}`,
             type: 'VIDEO',
-            asset_src: videoPath,
+            asset_src: finalVideoPath,
             name: `Video ${i + 1}`,
             start_time: startTime,
             duration: currentSegmentDuration,
@@ -63,32 +85,6 @@ export async function buildTimelineFromSegments(segments, settings, defaultSegme
             transitions: segment.transitions || {},
             fitMode: segment.fitMode || fitMode
         });
-
-        // 处理音频（可选）
-        if (segment.audio) {
-            const audioPath = await downloadFromOSS(segment.audio, 'audio', i, taskId);
-            tempFiles.push(audioPath);
-
-            audioClips.push({
-                id: `clip-audio-${i}-${Date.now()}`,
-                type: 'AUDIO',
-                asset_src: audioPath,
-                name: `Audio ${i + 1}`,
-                start_time: startTime,
-                duration: currentSegmentDuration,
-                asset_offset: 0,
-                filters: {
-                    opacity: 1,
-                    volume: segment.audioVolume ?? 1,
-                    transform: {
-                        x: 50,
-                        y: 50,
-                        scale: 1
-                    }
-                },
-                transitions: {}
-            });
-        }
 
         // 处理文案（可选）
         if (segment.text) {
@@ -169,15 +165,6 @@ export async function buildTimelineFromSegments(segments, settings, defaultSegme
             id: 't-video-1',
             type: 'VIDEO',
             clips: videoClips
-        });
-    }
-
-    // 添加 AUDIO track
-    if (audioClips.length > 0) {
-        timeline.tracks.push({
-            id: 't-audio-1',
-            type: 'AUDIO',
-            clips: audioClips
         });
     }
 
