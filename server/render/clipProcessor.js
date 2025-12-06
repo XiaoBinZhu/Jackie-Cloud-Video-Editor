@@ -362,12 +362,65 @@ export function processTextClip(clip, canvasWidth, canvasHeight, segmentDuration
   const contentY = videoContentArea ? videoContentArea.y : 0;
 
   // 设置文字换行宽度（左右各留20px边距）
-  const wordWrapWidth = contentWidth - 40;
+  const wordWrapWidth = Math.max(20, contentWidth - 40);
   const wordWrapMargin = 20;
+
+  // 估算字符宽度（ASCII 取 0.55 倍字号，中文/全角取 1 倍字号）
+  const estimateCharWidth = (char) => (/[\u0000-\u00ff]/.test(char) ? fontSize * 0.55 : fontSize);
+
+  // 将文本按宽度预先换行，保证中文无空格也能换行
+  const wrapTextToWidth = (inputText, maxWidth) => {
+    if (!inputText) {
+      return { text: '', lines: [''], maxLineWidth: 0 };
+    }
+
+    // 预留描边厚度，避免宽度被描边撑满后不换行
+    const safeWidth = Math.max(10, maxWidth - strokeWidth * 2);
+    const lines = [];
+    let current = '';
+    let currentWidth = 0;
+
+    const pushLine = () => {
+      if (current.length === 0) return;
+      lines.push(current);
+      current = '';
+      currentWidth = 0;
+    };
+
+    for (const ch of inputText) {
+      const chWidth = estimateCharWidth(ch);
+      if (currentWidth + chWidth > safeWidth && current.length > 0) {
+        pushLine();
+      }
+      current += ch;
+      currentWidth += chWidth;
+    }
+    pushLine();
+
+    // 计算各行的最大宽度（包含描边）
+    const maxLineWidth = lines.length
+      ? Math.min(
+        maxWidth,
+        Math.max(
+          ...lines.map((line) => {
+            let width = 0;
+            for (const ch of line) {
+              width += estimateCharWidth(ch);
+            }
+            return width + strokeWidth * 2;
+          }),
+        ),
+      )
+      : 0;
+
+    return { text: lines.join('\n'), lines, maxLineWidth };
+  };
+
+  const { text: wrappedText, lines: wrappedLines, maxLineWidth } = wrapTextToWidth(textContent, wordWrapWidth);
 
   // 关键修复：先创建 FFText 对象并设置样式，然后获取实际尺寸
   const text = new FFText({
-    text: textContent,
+    text: wrappedText,
     fontSize,
     color: fontColor,
   });
@@ -383,6 +436,7 @@ export function processTextClip(clip, canvasWidth, canvasHeight, segmentDuration
       strokeThickness: strokeWidth,
       wordWrap: true,
       wordWrapWidth: wordWrapWidth,
+      align: 'center',
       breakWords: true,  // 添加：强制允许在字符内部换行，确保中文文本能够换行
       lineHeight: lineHeight,
     });
@@ -417,54 +471,30 @@ export function processTextClip(clip, canvasWidth, canvasHeight, segmentDuration
   }
 
   // 获取文本实际尺寸（考虑换行后的多行高度）
-  let singleLineWidth, actualDisplayWidth, actualTextHeight;
+  let singleLineWidth = maxLineWidth || wordWrapWidth;
+  let actualDisplayWidth = Math.min(singleLineWidth, wordWrapWidth);
+  let actualTextHeight = (wrappedLines.length || 1) * lineHeight + strokeWidth * 2;
   try {
-    // 关键修复：先获取单行文本宽度（不考虑换行）
+    // 关键修复：优先使用引擎的宽高测量，结合预包行结果
     if (typeof text.getTextWidth === 'function') {
-      singleLineWidth = text.getTextWidth();
-    } else {
-      // 如果方法不存在，使用估算值
-      singleLineWidth = textContent.length * fontSize * 0.6;
+      singleLineWidth = text.getTextWidth() + 2 * strokeWidth;
+      actualDisplayWidth = Math.min(singleLineWidth, wordWrapWidth);
     }
-
-    // 关键修复：加上描边宽度（描边会在文本两侧各增加 strokeWidth）
-    // getTextWidth() 可能不包含描边宽度，需要手动加上
-    singleLineWidth = singleLineWidth + 2 * strokeWidth;
-
-    // 判断是否需要换行，确定实际显示宽度
-    // 如果单行宽度（包含描边） <= wordWrapWidth，文本不需要换行，使用单行宽度
-    // 如果单行宽度（包含描边） > wordWrapWidth，文本会换行，实际显示宽度就是 wordWrapWidth
-    if (singleLineWidth <= wordWrapWidth) {
-      actualDisplayWidth = singleLineWidth;
-    } else {
-      actualDisplayWidth = wordWrapWidth;
-    }
-
-    logger.debug(`[文字处理] 单行宽度(含描边): ${singleLineWidth}, 换行宽度: ${wordWrapWidth}, 实际显示宽度: ${actualDisplayWidth}`);
 
     if (typeof text.getTextHeight === 'function') {
-      actualTextHeight = text.getTextHeight();
-    } else {
-      // 如果方法不存在，估算多行高度
-      // 计算需要多少行（使用包含描边的宽度）
-      const estimatedLines = Math.ceil(singleLineWidth / wordWrapWidth);
-      // 计算总高度（至少1行，最多按实际行数，预留2行）
-      const maxLines = Math.max(estimatedLines, 2);
-      actualTextHeight = maxLines * lineHeight + strokeWidth * 2;
+      // 取引擎测量值与预估值的较大者，避免被行高截断
+      actualTextHeight = Math.max(actualTextHeight, text.getTextHeight());
     }
+
+    logger.debug(`[文字处理] 单行宽度(含描边): ${singleLineWidth}, 换行宽度: ${wordWrapWidth}, 实际显示宽度: ${actualDisplayWidth}, 行数: ${wrappedLines.length}`);
   } catch (e) {
     logger.warn(`获取文本尺寸失败: ${e.message}，使用估算值`);
     // 如果获取失败，使用估算值，也要加上描边宽度
-    singleLineWidth = textContent.length * fontSize * 0.6 + 2 * strokeWidth;
-    // 判断是否需要换行
-    if (singleLineWidth <= wordWrapWidth) {
-      actualDisplayWidth = singleLineWidth;
-    } else {
-      actualDisplayWidth = wordWrapWidth;
-    }
-    const estimatedLines = Math.ceil(singleLineWidth / wordWrapWidth);
+    singleLineWidth = maxLineWidth || textContent.length * fontSize * 0.6 + 2 * strokeWidth;
+    actualDisplayWidth = Math.min(singleLineWidth, wordWrapWidth);
+    const estimatedLines = wrappedLines.length || Math.ceil(singleLineWidth / wordWrapWidth);
     const maxLines = Math.max(estimatedLines, 2);
-    actualTextHeight = maxLines * lineHeight + strokeWidth * 2;
+    actualTextHeight = Math.max(actualTextHeight, maxLines * lineHeight + strokeWidth * 2);
   }
 
   // 预留2行文字的高度（用于底部位置计算）
@@ -511,17 +541,19 @@ export function processTextClip(clip, canvasWidth, canvasHeight, segmentDuration
       x = Math.max(wordWrapMargin, Math.min(x, canvasWidth - actualDisplayWidth - wordWrapMargin));
     }
   }
+  console.log(transformY, 'transformY');
 
   // 垂直位置
   if (transformY === null || transformY === undefined) {
     // 默认：内容区域底部中间（底部往上一定距离，确保文本在内容区域底部中间区域）
     // 关键修复：如果有 videoContentArea，使用视频内容区域的底部；否则使用画布底部
-    const bottomMargin = 50; // 底部边距（像素）
+    // 使用内容高度的 8% 作为底部安全区，至少 50px，避免字幕落在画面外或黑边
+    const bottomMargin = Math.max(50, Math.round(contentHeight * 0.15));
     const contentBottom = contentY + contentHeight;
     y = Math.round(contentBottom - bottomMargin - finalTextHeight);
     // 确保 y 值不会为负数
-    y = Math.max(0, y);
-    logger.debug(`[文字处理] 底部定位: 内容Y=${contentY}, 内容高度=${contentHeight}, 内容底部=${contentBottom}, y=${y}`);
+    y = Math.max(contentY, y);
+    console.log(`[文字处理] 底部定位: 内容Y=${contentY}, 内容高度=${contentHeight}, 内容底部=${contentBottom}, y=${y}`);
   } else if (transformY === 50) {
     // 内容区域垂直居中（基于实际文本高度）
     const contentCenterY = contentY + contentHeight / 2;

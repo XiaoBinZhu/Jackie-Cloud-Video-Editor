@@ -203,12 +203,12 @@ export function getTaskResult(taskId) {
   }
 
   // Base64 转换成功后，删除输出视频文件
-  // try {
-  //   fs.unlinkSync(task.outputFile);
-  //   logger.withTaskId(taskId).info(`已删除输出视频文件: ${task.outputFile}`);
-  // } catch (deleteError) {
-  //   logger.withTaskId(taskId).warn(`删除输出视频文件失败: ${deleteError.message}`);
-  // }
+  try {
+    fs.unlinkSync(task.outputFile);
+    logger.withTaskId(taskId).info(`已删除输出视频文件: ${task.outputFile}`);
+  } catch (deleteError) {
+    logger.withTaskId(taskId).warn(`删除输出视频文件失败: ${deleteError.message}`);
+  }
   return {
     success: true,
     taskId,
