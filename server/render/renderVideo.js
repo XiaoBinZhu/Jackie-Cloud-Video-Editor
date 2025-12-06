@@ -5,6 +5,7 @@
  * 核心原则：画布尺寸以传入的第一个视频的实际尺寸为准
  */
 import path from 'path';
+import fs from 'fs';
 import { FFCreator } from 'ffcreatorlite';
 import { getResolution, getCanvasSizeFromTimeline, resolveAssetPath } from './videoUtils.js';
 import { collectClipsFromTimeline, calculateTimePoints, buildAllScenes } from './sceneBuilder.js';
@@ -39,6 +40,70 @@ export async function renderVideo({
 
     onProgress(5, '正在检测视频尺寸...');
 
+    /**
+     * 选择更优的视频素材路径（优先合并+预处理文件）
+     * - 仅处理本地绝对路径，远程 URL 原样返回
+     * - 优先级：同时包含 _preprocessed_ 与 _merged_ > 仅 _preprocessed_ > 仅 _merged_ > 原路径
+     * - 同优先级时取最新修改时间的文件
+     */
+    const pickPreferredVideoPath = (assetPath, fitMode, canvasWidth, canvasHeight) => {
+      if (!assetPath || assetPath.startsWith('http://') || assetPath.startsWith('https://')) {
+        return assetPath;
+      }
+
+      const ext = path.extname(assetPath) || '.mp4';
+      const dir = path.dirname(assetPath);
+      const base = path.basename(assetPath, ext);
+
+      if (!fs.existsSync(dir)) {
+        return assetPath;
+      }
+
+      const canvasTag = canvasWidth && canvasHeight ? `${canvasWidth}x${canvasHeight}` : '';
+      const files = fs.readdirSync(dir).filter(name => name.endsWith(ext));
+
+      const scored = files
+        .filter(name => name.startsWith(base))
+        .map(name => {
+          let score = 0;
+          if (name.includes('_preprocessed_')) score += 3;
+          if (name.includes('_merged_')) score += 2;
+          if (canvasTag && name.includes(canvasTag)) score += 1;
+          if (fitMode && name.includes(`_${fitMode}_`)) score += 1;
+          const fullPath = path.join(dir, name);
+          const mtime = fs.statSync(fullPath).mtimeMs;
+          return { name, fullPath, score, mtime };
+        })
+        .filter(item => item.score > 0)
+        .sort((a, b) => {
+          if (b.score !== a.score) return b.score - a.score;
+          return b.mtime - a.mtime;
+        });
+
+      return scored.length > 0 ? scored[0].fullPath : assetPath;
+    };
+
+    /**
+     * 遍历时间线中的视频片段，强制使用合并+预处理后的文件
+     */
+    const enforcePreferredVideoAssets = (tl, canvasWidth, canvasHeight, taskLogger) => {
+      if (!tl?.tracks || !Array.isArray(tl.tracks)) return;
+
+      tl.tracks.forEach(track => {
+        if (track.type !== 'VIDEO' || !Array.isArray(track.clips)) return;
+
+        track.clips = track.clips.map(clip => {
+          const fitMode = clip.fitMode || settings.fitMode || 'contain';
+          const preferred = pickPreferredVideoPath(clip.asset_src, fitMode, canvasWidth, canvasHeight);
+          if (preferred && preferred !== clip.asset_src) {
+            taskLogger.info(`[素材选择] 使用合并/预处理文件: ${preferred}`);
+            return { ...clip, asset_src: preferred };
+          }
+          return clip;
+        });
+      });
+    };
+
     // 兼容原有逻辑：如果设置了 resolution，优先使用固定画布尺寸
     // 如果 resolution 为 'auto' 或未设置，则使用视频实际尺寸
     let canvasWidth, canvasHeight;
@@ -68,6 +133,9 @@ export async function renderVideo({
         taskLogger.info(`画布尺寸: ${canvasWidth}x${canvasHeight} (来自视频实际尺寸)`);
       }
     }
+
+    // 在生成场景前，统一选择合并+预处理后的素材路径
+    enforcePreferredVideoAssets(timeline, canvasWidth, canvasHeight, taskLogger);
 
     const outputFileName = `video_${taskId}.${format}`;
     const outputPath = path.join(outputDir, outputFileName);

@@ -278,8 +278,22 @@ export function preprocessVideoForPortrait(inputPath, canvasWidth, canvasHeight,
         }
       }
 
-      // 获取视频尺寸
-      getVideoDimensions(inputPath).then(videoDimensions => {
+      // 获取视频尺寸和音频流信息
+      Promise.all([
+        getVideoDimensions(inputPath),
+        new Promise((resolveProbe) => {
+          // 检查视频是否有音频流
+          ffmpeg.ffprobe(inputPath, (err, metadata) => {
+            if (err) {
+              logger.warn(`[预处理] 无法获取视频元数据: ${err.message}`);
+              resolveProbe(false); // 假设没有音频
+              return;
+            }
+            const hasAudio = metadata.streams?.some(stream => stream.codec_type === 'audio');
+            resolveProbe(hasAudio);
+          });
+        })
+      ]).then(([videoDimensions, hasAudio]) => {
         if (!videoDimensions) {
           logger.warn(`[预处理] 无法获取视频尺寸，跳过预处理: ${inputPath}`);
           resolve(inputPath); // 返回原路径
@@ -290,6 +304,8 @@ export function preprocessVideoForPortrait(inputPath, canvasWidth, canvasHeight,
         const sourceHeight = videoDimensions.height;
         const sourceAspect = sourceWidth / sourceHeight;
         const canvasAspect = canvasWidth / canvasHeight;
+
+        logger.info(`[预处理] 视频音频流检测: ${hasAudio ? '有音频' : '无音频'}`);
 
         let filterString;
 
@@ -481,15 +497,30 @@ export function preprocessVideoForPortrait(inputPath, canvasWidth, canvasHeight,
         logger.info(`[预处理] 源尺寸: ${sourceWidth}x${sourceHeight}, 目标: ${canvasWidth}x${canvasHeight}, fitMode: ${fitMode}`);
         logger.info(`[预处理] FFmpeg 滤镜: ${filterString}`);
 
+        // 构建输出选项
+        const outputOptions = [
+          '-map 0:v:0',  // 映射视频流
+          '-c:v libx264',
+          '-preset fast',
+          '-crf 23',
+          '-pix_fmt yuv420p',
+          '-movflags +faststart'
+        ];
+
+        // 如果有音频流，映射并复制音频
+        if (hasAudio) {
+          outputOptions.push('-map 0:a:0');  // 映射音频流（使用标准语法，不使用 ?）
+          outputOptions.push('-c:a copy');    // 复制音频，不重新编码
+          logger.info(`[预处理] 检测到音频流，将保留音频`);
+        } else {
+          logger.warn(`[预处理] ⚠️ 未检测到音频流，输出视频将无音频`);
+        }
+
         // 使用 fluent-ffmpeg 处理视频
+        // 保留音轨：显式映射视频/音频流，并复制音频，避免预处理后丢失声音
         ffmpeg(inputPath)
           .videoFilters(filterString)
-          .outputOptions([
-            '-c:v libx264',
-            '-preset fast',
-            '-crf 23',
-            '-pix_fmt yuv420p'
-          ])
+          .outputOptions(outputOptions)
           .output(outputPath)
           .on('start', (commandLine) => {
             logger.debug(`[预处理] FFmpeg 命令: ${commandLine}`);
@@ -505,12 +536,37 @@ export function preprocessVideoForPortrait(inputPath, canvasWidth, canvasHeight,
           })
           .on('error', (err) => {
             logger.error(`[预处理] ❌ 视频预处理失败: ${err.message}`);
-            // 预处理失败，返回原路径
-            resolve(inputPath);
+            // 如果是因为音频映射失败，尝试不映射音频重新处理
+            if (hasAudio && err.message.includes('Stream map')) {
+              logger.warn(`[预处理] ⚠️ 音频映射失败，尝试不映射音频重新处理`);
+              ffmpeg(inputPath)
+                .videoFilters(filterString)
+                .outputOptions([
+                  '-map 0:v:0',
+                  '-c:v libx264',
+                  '-preset fast',
+                  '-crf 23',
+                  '-pix_fmt yuv420p',
+                  '-movflags +faststart'
+                ])
+                .output(outputPath)
+                .on('end', () => {
+                  logger.warn(`[预处理] ⚠️ 视频预处理完成（无音频）: ${outputPath}`);
+                  resolve(outputPath);
+                })
+                .on('error', (err2) => {
+                  logger.error(`[预处理] ❌ 重新处理也失败: ${err2.message}`);
+                  resolve(inputPath);
+                })
+                .run();
+            } else {
+              // 预处理失败，返回原路径
+              resolve(inputPath);
+            }
           })
           .run();
       }).catch(err => {
-        logger.error(`[预处理] ❌ 获取视频尺寸失败: ${err.message}`);
+        logger.error(`[预处理] ❌ 获取视频信息失败: ${err.message}`);
         resolve(inputPath); // 返回原路径
       });
     } catch (error) {
@@ -615,12 +671,18 @@ export function ensureVideoMetadata(inputPath, outputPath = null) {
  * @returns {Promise<string>} 合并后的视频路径；合并失败时返回原视频路径
  */
 export function mergeVideoWithAudio(videoPath, audioPath, outputPath = null) {
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     try {
       if (!videoPath || !audioPath) {
-        logger.warn('[合并音频] 缺少视频或音频路径，跳过合并');
-        resolve(videoPath);
-        return;
+        return reject(new Error('[合并音频] 缺少视频或音频路径'));
+      }
+
+      if (!fs.existsSync(videoPath)) {
+        return reject(new Error(`[合并音频] 视频文件不存在: ${videoPath}`));
+      }
+
+      if (!fs.existsSync(audioPath)) {
+        return reject(new Error(`[合并音频] 音频文件不存在: ${audioPath}`));
       }
 
       // 生成默认输出路径
@@ -650,15 +712,20 @@ export function mergeVideoWithAudio(videoPath, audioPath, outputPath = null) {
 
       logger.info(`[合并音频] 开始合并: 视频=${videoPath}, 音频=${audioPath}, 输出=${outputPath}`);
 
-      ffmpeg(videoPath)
+      // 构建 FFmpeg 命令
+      const ffmpegCommand = ffmpeg(videoPath)
         .input(audioPath)
         .outputOptions([
-          '-map 0:v:0',
-          '-map 1:a:0',
-          '-c:v copy',        // 不重新编码视频
-          '-c:a aac',         // 统一音频编码
-          '-shortest'         // 时长取较短，避免黑屏或静音尾巴
-        ])
+          '-map 0:v:0',        // 映射视频流
+          '-map 1:a:0',        // 映射音频流
+          '-c:v copy',         // 不重新编码视频
+          '-c:a aac',          // 统一音频编码为 AAC
+          '-b:a 192k',         // 设置音频比特率，确保音质
+          '-shortest',         // 时长取较短，避免黑屏或静音尾巴
+          '-af apad'           // 关键：apad 填充音频，确保音频长度匹配视频，避免音频不足截短视频
+        ]);
+
+      ffmpegCommand
         .on('start', (commandLine) => {
           logger.debug(`[合并音频] FFmpeg 命令: ${commandLine}`);
         })
@@ -673,13 +740,12 @@ export function mergeVideoWithAudio(videoPath, audioPath, outputPath = null) {
         })
         .on('error', (err) => {
           logger.error(`[合并音频] ❌ 合并失败: ${err.message}`);
-          // 合并失败，使用原视频继续流程，避免整体失败
-          resolve(videoPath);
+          reject(new Error(`[合并音频] 合并失败: ${err.message}`));
         })
         .save(outputPath);
     } catch (error) {
       logger.error(`[合并音频] ❌ 合并异常: ${error.message}`);
-      resolve(videoPath);
+      reject(error);
     }
   });
 }

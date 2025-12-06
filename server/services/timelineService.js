@@ -2,11 +2,13 @@
  * 时间线构建服务
  * 从片段数据构建 FFCreatorLite 时间线
  */
+import fs from 'fs';
 import path from 'path';
 import { downloadFromOSS, processText } from './ossService.js';
 import { getResolution } from '../utils/videoUtils.js';
-import { mergeVideoWithAudio } from '../render/videoUtils.js';
+import { mergeVideoWithAudio, preprocessVideoForPortrait } from '../render/videoUtils.js';
 import { DIRS } from '../config/config.js';
+import { logger } from '../utils/logger.js';
 
 /**
  * 从片段数据构建时间线
@@ -44,7 +46,9 @@ export async function buildTimelineFromSegments(segments, settings, defaultSegme
         let finalVideoPath = videoPath;
 
         // 如果传入了独立音频，先与视频合并
-        if (segment.audio) {
+        const hasAudio = typeof segment.audio === 'string' && segment.audio.trim() !== '';
+        if (hasAudio) {
+            logger.info(`[片段 ${i + 1}] 检测到 audio，开始下载并合并音频`);
             const audioPath = await downloadFromOSS(segment.audio, 'audio', i, taskId);
             tempFiles.push(audioPath);
 
@@ -54,12 +58,73 @@ export async function buildTimelineFromSegments(segments, settings, defaultSegme
                 `segment_${i + 1}_merged_${Date.now()}${path.extname(videoPath) || '.mp4'}`
             );
 
-            finalVideoPath = await mergeVideoWithAudio(videoPath, audioPath, mergedPath);
+            try {
+                const mergedVideoPath = await mergeVideoWithAudio(videoPath, audioPath, mergedPath);
 
-            // 如果合并成功且生成了新文件，记录用于清理
-            if (finalVideoPath !== videoPath) {
-                tempFiles.push(finalVideoPath);
+                if (!mergedVideoPath || !fs.existsSync(mergedVideoPath)) {
+                    throw new Error(`片段 ${i + 1} 音频合并失败，生成文件不存在`);
+                }
+
+                finalVideoPath = mergedVideoPath;
+
+                if (finalVideoPath !== videoPath) {
+                    tempFiles.push(finalVideoPath);
+                }
+
+                logger.info(`[片段 ${i + 1}] 音频合并成功: ${finalVideoPath}`);
+            } catch (mergeError) {
+                logger.error(`[片段 ${i + 1}] 音频合并失败: ${mergeError.message}`);
+                throw mergeError;
             }
+        } else {
+            logger.info(`[片段 ${i + 1}] 未检测到 audio，跳过音频合并`);
+        }
+
+        // 预处理视频以匹配画布尺寸，保证只有一个输出文件
+        const clipFitMode = segment.fitMode || fitMode;
+        try {
+            const videoDir = path.dirname(finalVideoPath);
+            const ext = path.extname(finalVideoPath) || '.mp4';
+            const base = path.basename(finalVideoPath, ext);
+            const preprocessedOutputPath = path.join(
+                videoDir,
+                `${base}_preprocessed_${clipFitMode}_${resolution.width}x${resolution.height}${ext}`
+            );
+
+            const processedPath = await preprocessVideoForPortrait(
+                finalVideoPath,
+                resolution.width,
+                resolution.height,
+                clipFitMode,
+                preprocessedOutputPath
+            );
+
+            if (processedPath && fs.existsSync(processedPath)) {
+                // 如果生成了新文件，则替换原文件，确保最终只保留一个文件
+                if (processedPath !== finalVideoPath) {
+                    try {
+                        if (fs.existsSync(finalVideoPath)) {
+                            fs.unlinkSync(finalVideoPath);
+                        }
+                        finalVideoPath = processedPath;
+                        logger.info(`[片段 ${i + 1}] 预处理完成，使用新文件: ${finalVideoPath}`);
+                    } catch (replaceError) {
+                        logger.warn(`[片段 ${i + 1}] 预处理替换文件失败: ${replaceError.message}`);
+                        // 替换失败时，使用预处理后的文件路径
+                        finalVideoPath = processedPath;
+                    }
+                } else {
+                    logger.info(`[片段 ${i + 1}] 预处理完成，使用原路径: ${finalVideoPath}`);
+                }
+            } else {
+                logger.warn(`[片段 ${i + 1}] 预处理未生成新文件，继续使用: ${finalVideoPath}`);
+            }
+        } catch (preprocessError) {
+            logger.warn(`[片段 ${i + 1}] 预处理异常，使用原视频: ${preprocessError.message}`);
+        }
+
+        if (!tempFiles.includes(finalVideoPath)) {
+            tempFiles.push(finalVideoPath);
         }
 
         // 视频默认居中显示，有传参才按传参的算

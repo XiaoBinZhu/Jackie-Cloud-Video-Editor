@@ -142,6 +142,7 @@ export async function createVideoTask(taskId, settings, timeline, tempFiles = []
           }
 
           // 清理临时文件（删除整个 taskId 文件夹）
+          // 按用户需求保留下载的音视频及合成中间文件，便于查看效果
           const task = videoTasks.get(taskId);
           if (task && task.taskDir) {
             cleanupTaskDirectory(task.taskDir, taskId);
@@ -160,7 +161,7 @@ export async function createVideoTask(taskId, settings, timeline, tempFiles = []
           errorTask.message = error.message || '视频合成失败';
           errorTask.lastUpdate = Date.now();
         }
-        // 清理临时文件（删除整个 taskId 文件夹）
+        // 按用户需求保留下载的音视频及合成中间文件，便于排查
         const task = videoTasks.get(taskId);
         if (task && task.taskDir) {
           cleanupTaskDirectory(task.taskDir, taskId);

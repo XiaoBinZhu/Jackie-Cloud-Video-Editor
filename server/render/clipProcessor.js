@@ -36,7 +36,8 @@ export async function processVideoClip(clip, canvasWidth, canvasHeight, segmentS
 
   // 对于所有画布（竖屏和横屏），预处理视频以确保正确填充（关键修复）
   // 使用 FFmpeg 的 scale 和 pad/crop 滤镜预处理视频，确保视频尺寸正好等于画布尺寸
-  if (!absolutePath.startsWith('http://') && !absolutePath.startsWith('https://')) {
+  const alreadyPreprocessed = absolutePath.includes('_preprocessed_');
+  if (!absolutePath.startsWith('http://') && !absolutePath.startsWith('https://') && !alreadyPreprocessed) {
     try {
       // 创建预处理后的视频路径
       const videoDir = path.dirname(absolutePath);
@@ -59,6 +60,8 @@ export async function processVideoClip(clip, canvasWidth, canvasHeight, segmentS
     } catch (error) {
       logger.warn(`[视频处理] ⚠️ 预处理失败，使用原视频: ${error.message}`);
     }
+  } else if (alreadyPreprocessed) {
+    logger.info(`[视频处理] 已是预处理视频，直接使用: ${absolutePath}`);
   }
 
   // 获取视频的变换参数
@@ -228,6 +231,7 @@ export async function processVideoClip(clip, canvasWidth, canvasHeight, segmentS
     x: finalVideoX,
     y: finalVideoY,
     ss: assetOffset,
+    audio: true, // 显式启用音轨，确保渲染阶段保留片段音频
   });
 
   // 使用 setWH 方法设置尺寸（这是 FFCreatorLite 推荐的方式）
@@ -246,6 +250,7 @@ export async function processVideoClip(clip, canvasWidth, canvasHeight, segmentS
         width: finalVideoWidth,
         height: finalVideoHeight,
         ss: assetOffset,
+        audio: true, // 备用构造同样启用音轨
       });
       videoWithSize.setDuration(segmentDuration);
       logger.warn(`[视频处理] ⚠️ 使用构造函数参数设置尺寸: ${finalVideoWidth}x${finalVideoHeight}`);
