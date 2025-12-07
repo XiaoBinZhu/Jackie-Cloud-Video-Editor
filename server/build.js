@@ -1,442 +1,328 @@
 /**
- * 打包脚本 - 用于 Windows 打包，部署到 Linux 服务器
- * 使用方法: node build.js
+ * 服务端打包脚本（Windows 打包，CentOS/PM2 部署）
+ * 使用方式：node build.js
+ * 产物：dist/ai-node-<timestamp>.zip 与 .tar.gz，解压后为 ai-node 目录
  */
 
 import fs from 'fs';
 import path from 'path';
-import { fileURLToPath } from 'url';
 import { execSync } from 'child_process';
+import { fileURLToPath } from 'url';
 import archiver from 'archiver';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const PROJECT_ROOT = __dirname;
-const DIST_DIR = path.join(PROJECT_ROOT, 'dist');
-const BUILD_DIR = path.join(DIST_DIR, 'build');
+const ROOT = __dirname;
+const DIST_DIR = path.join(ROOT, 'dist');
+const STAGE_DIR = path.join(DIST_DIR, 'ai-node');
+// 是否在打包阶段就安装 node_modules（默认 false，便于服务器自行 npm i）
+const INSTALL_NODE_MODULES = false;
 
-// 需要复制的文件和目录（不包含 lock 文件，会根据包管理器自动处理）
-const COPY_PATTERNS = [
+// 需要打包的文件/目录
+const COPY_TARGETS = [
   'index.js',
-  'config/**/*',
-  'middleware/**/*',
-  'routes/**/*',
-  'services/**/*',
-  'render/**/*',
-  'utils/**/*',
+  'config',
+  'middleware',
+  'routes',
+  'services',
+  'render',
+  'utils',
   'ecosystem.config.cjs',
+  '.env.example'
 ];
 
-// 需要排除的文件和目录
-const EXCLUDE_PATTERNS = [
+// 需要过滤掉的通配符（匹配相对路径）
+const EXCLUDES = [
   'node_modules',
   'dist',
   'output',
   'cache',
   'uploads',
-  '*.log',
+  '**/*.log',
+  '**/*.tmp',
+  '**/*.swp',
   '.git',
   '.gitignore',
-  'test-*.js',
-  '*.test.js',
-  '*.spec.js',
-  '.env',
-  '.env.local',
   '.DS_Store',
   'Thumbs.db',
+  'test-*.js',
+  '**/*.test.js',
+  '**/*.spec.js'
 ];
 
-/**
- * 递归复制目录
- */
-function copyDir(src, dest) {
-  if (!fs.existsSync(dest)) {
-    fs.mkdirSync(dest, { recursive: true });
-  }
+const NODEMODULES_CLEAN_PATTERNS = [
+  '**/*.md',
+  '**/*.txt',
+  '**/*.map',
+  '**/.git',
+  '**/.github',
+  '**/test',
+  '**/tests',
+  '**/__tests__',
+  '**/*.test.*',
+  '**/*.spec.*',
+  '**/examples',
+  '**/example',
+  '**/docs',
+  '**/doc',
+  '**/CHANGELOG*',
+  '**/LICENSE*',
+  '**/README*',
+  '**/HISTORY*',
+  '**/NOTES*',
+  '**/TODO*',
+  '**/.npmignore',
+  '**/.eslintrc*',
+  '**/.prettierrc*',
+  '**/tsconfig.json',
+  '**/jest.config.*',
+  '**/.travis.yml',
+  '**/.circleci',
+  '**/.nyc_output',
+  '**/coverage'
+];
 
-  const entries = fs.readdirSync(src, { withFileTypes: true });
+const LOCK_FILE_MAP = {
+  pnpm: 'pnpm-lock.yaml',
+  yarn: 'yarn.lock',
+  npm: 'package-lock.json'
+};
 
-  for (const entry of entries) {
-    const srcPath = path.join(src, entry.name);
-    const destPath = path.join(dest, entry.name);
-
-    if (entry.isDirectory()) {
-      copyDir(srcPath, destPath);
-    } else {
-      fs.copyFileSync(srcPath, destPath);
-    }
-  }
+function logStep(message) {
+  console.log(`\n▶ ${message}`);
 }
 
-/**
- * 复制文件或目录
- */
-function copyItem(src, dest) {
-  const srcPath = path.join(PROJECT_ROOT, src);
-  const destPath = path.join(BUILD_DIR, src);
-
-  if (!fs.existsSync(srcPath)) {
-    console.warn(`⚠️  文件不存在，跳过: ${src}`);
-    return;
-  }
-
-  const stat = fs.statSync(srcPath);
-
-  if (stat.isDirectory()) {
-    copyDir(srcPath, destPath);
-  } else {
-    const destDir = path.dirname(destPath);
-    if (!fs.existsSync(destDir)) {
-      fs.mkdirSync(destDir, { recursive: true });
-    }
-    fs.copyFileSync(srcPath, destPath);
-  }
+function toPosix(relPath) {
+  return relPath.split(path.sep).join('/');
 }
 
-/**
- * 检查是否应该排除文件
- */
-function shouldExclude(filePath) {
-  const relativePath = path.relative(PROJECT_ROOT, filePath);
-
-  for (const pattern of EXCLUDE_PATTERNS) {
-    // 简单的通配符匹配
-    if (pattern.includes('*')) {
-      const regex = new RegExp(pattern.replace(/\*/g, '.*'));
-      if (regex.test(relativePath) || regex.test(path.basename(relativePath))) {
-        return true;
-      }
-    } else if (relativePath.includes(pattern) || path.basename(filePath) === pattern) {
-      return true;
-    }
-  }
-  return false;
+function ensureDir(dir) {
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 }
 
-/**
- * 清理构建目录
- */
-function cleanBuildDir() {
-  console.log('🧹 清理构建目录...');
+function cleanDist() {
+  logStep('清理 dist 目录');
   if (fs.existsSync(DIST_DIR)) {
     fs.rmSync(DIST_DIR, { recursive: true, force: true });
   }
-  fs.mkdirSync(BUILD_DIR, { recursive: true });
+  ensureDir(STAGE_DIR);
 }
 
-/**
- * 复制文件到构建目录
- */
-function copyFiles() {
-  console.log('📦 复制文件到构建目录...');
-
-  for (const pattern of COPY_PATTERNS) {
-    if (pattern.includes('**')) {
-      // 处理通配符模式，提取基础目录
-      const baseDir = pattern.split('/')[0];
-      const srcPath = path.join(PROJECT_ROOT, baseDir);
-
-      if (fs.existsSync(srcPath)) {
-        // 复制整个目录
-        const destPath = path.join(BUILD_DIR, baseDir);
-        if (fs.statSync(srcPath).isDirectory()) {
-          copyDir(srcPath, destPath);
-        } else {
-          copyItem(baseDir, BUILD_DIR);
-        }
-      } else {
-        console.warn(`⚠️  目录不存在，跳过: ${baseDir}`);
-      }
-    } else {
-      copyItem(pattern, BUILD_DIR);
-    }
-  }
-
-  console.log('✅ 文件复制完成');
-}
-
-/**
- * 检测包管理器
- */
-function detectPackageManager() {
-  const pnpmLock = fs.existsSync(path.join(PROJECT_ROOT, 'pnpm-lock.yaml'));
-  const npmLock = fs.existsSync(path.join(PROJECT_ROOT, 'package-lock.json'));
-  const yarnLock = fs.existsSync(path.join(PROJECT_ROOT, 'yarn.lock'));
-
-  // 检查命令是否可用
-  try {
-    execSync('pnpm --version', { stdio: 'ignore' });
-    if (pnpmLock) return 'pnpm';
-  } catch { }
-
-  try {
-    execSync('yarn --version', { stdio: 'ignore' });
-    if (yarnLock) return 'yarn';
-  } catch { }
-
-  return 'npm';
-}
-
-/**
- * 创建精简的 package.json（只包含生产依赖）
- */
-function createMinimalPackageJson() {
-  const originalPkg = JSON.parse(
-    fs.readFileSync(path.join(PROJECT_ROOT, 'package.json'), 'utf-8')
-  );
-
-  const minimalPkg = {
-    name: originalPkg.name,
-    version: originalPkg.version,
-    type: originalPkg.type,
-    scripts: {
-      start: originalPkg.scripts?.start || 'node index.js',
-    },
-    dependencies: originalPkg.dependencies || {},
-  };
-
-  fs.writeFileSync(
-    path.join(BUILD_DIR, 'package.json'),
-    JSON.stringify(minimalPkg, null, 2)
-  );
-
-  console.log('✅ 创建精简 package.json（仅生产依赖）');
-}
-
-/**
- * 复制锁文件（如果存在）
- */
-function copyLockFile(packageManager) {
-  const lockFiles = {
-    pnpm: 'pnpm-lock.yaml',
-    yarn: 'yarn.lock',
-    npm: 'package-lock.json',
-  };
-
-  const lockFile = lockFiles[packageManager];
-  const srcLockPath = path.join(PROJECT_ROOT, lockFile);
-
-  if (fs.existsSync(srcLockPath)) {
-    fs.copyFileSync(srcLockPath, path.join(BUILD_DIR, lockFile));
-    console.log(`✅ 复制锁文件: ${lockFile}`);
-  }
-}
-
-/**
- * 安装生产依赖
- */
-function installDependencies(packageManager) {
-  console.log(`📥 使用 ${packageManager} 安装生产依赖...`);
-  try {
-    process.chdir(BUILD_DIR);
-
-    let command;
-    switch (packageManager) {
-      case 'pnpm':
-        // 先尝试使用 frozen-lockfile，如果失败则回退到普通安装
-        command = 'pnpm install --prod --frozen-lockfile';
-        break;
-      case 'yarn':
-        command = 'yarn install --production --frozen-lockfile';
-        break;
-      default:
-        command = 'npm ci --production';
-    }
-
-    try {
-      execSync(command, { stdio: 'inherit', encoding: 'utf-8' });
-      console.log('✅ 依赖安装完成');
-    } catch (installError) {
-      // 如果是 frozen-lockfile 错误，尝试不使用该选项
-      if (packageManager === 'pnpm' && command.includes('--frozen-lockfile')) {
-        console.warn('⚠️  frozen-lockfile 安装失败，尝试普通安装...');
-        command = 'pnpm install --prod';
-        execSync(command, { stdio: 'inherit', encoding: 'utf-8' });
-        console.log('✅ 依赖安装完成（使用普通安装模式）');
-      } else {
-        throw installError;
-      }
-    }
-  } catch (error) {
-    console.error('❌ 依赖安装失败:', error.message);
-    if (error.stdout) {
-      console.error('标准输出:', error.stdout);
-    }
-    if (error.stderr) {
-      console.error('错误输出:', error.stderr);
-    }
-    throw error;
-  } finally {
-    process.chdir(PROJECT_ROOT);
-  }
-}
-
-/**
- * 创建压缩包
- */
-function createArchive() {
-  return new Promise((resolve, reject) => {
-    console.log('🗜️  创建压缩包...');
-
-    const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, -5);
-    const archiveName = `ai-node-${timestamp}.zip`;
-    const archivePath = path.join(DIST_DIR, archiveName);
-
-    const output = fs.createWriteStream(archivePath);
-    const archive = archiver('zip', {
-      zlib: { level: 9 } // 最高压缩级别
-    });
-
-    output.on('close', () => {
-      const sizeMB = (archive.pointer() / 1024 / 1024).toFixed(2);
-      console.log(`✅ 压缩包创建完成: ${archiveName} (${sizeMB} MB)`);
-      console.log(`📦 压缩包路径: ${archivePath}`);
-      console.log(`📁 解压后将生成: ai-node/ 目录`);
-      resolve(archivePath);
-    });
-
-    archive.on('error', (err) => {
-      console.error('❌ 压缩失败:', err);
-      reject(err);
-    });
-
-    archive.pipe(output);
-    // 将 BUILD_DIR 的内容压缩到 ai-node 目录中
-    archive.directory(BUILD_DIR, 'ai-node');
-    archive.finalize();
+function shouldExclude(absPath) {
+  const rel = toPosix(path.relative(ROOT, absPath));
+  return EXCLUDES.some((pattern) => {
+    const regex = new RegExp(
+      pattern
+        .replace(/[.+?^${}()|[\]\\]/g, '\\$&')
+        .replace(/\*\*/g, '.*')
+        .replace(/\*/g, '[^/]*')
+    );
+    return regex.test(rel) || regex.test(path.basename(absPath));
   });
 }
 
-/**
- * 清理 node_modules 中不必要的文件
- */
-function optimizeNodeModules() {
-  console.log('🔧 优化 node_modules...');
-  const nodeModulesPath = path.join(BUILD_DIR, 'node_modules');
-
-  if (!fs.existsSync(nodeModulesPath)) {
+function copyTarget(target) {
+  const src = path.join(ROOT, target);
+  const dest = path.join(STAGE_DIR, target);
+  if (!fs.existsSync(src)) {
+    console.warn(`⚠️  未找到 ${target}，跳过`);
     return;
   }
 
-  // 要删除的文件和目录模式
-  const patternsToRemove = [
-    '**/*.md',
-    '**/*.txt',
-    '**/*.map',
-    '**/.git',
-    '**/.github',
-    '**/test',
-    '**/tests',
-    '**/__tests__',
-    '**/*.test.js',
-    '**/*.spec.js',
-    '**/examples',
-    '**/example',
-    '**/docs',
-    '**/doc',
-    '**/CHANGELOG*',
-    '**/LICENSE*',
-    '**/README*',
-    '**/HISTORY*',
-    '**/NOTES*',
-    '**/TODO*',
-    '**/.npmignore',
-    '**/.eslintrc*',
-    '**/.prettierrc*',
-    '**/tsconfig.json',
-    '**/jest.config.*',
-    '**/.travis.yml',
-    '**/.circleci',
-    '**/.nyc_output',
-    '**/coverage',
-  ];
+  const stat = fs.statSync(src);
+  if (stat.isDirectory()) {
+    fs.cpSync(src, dest, {
+      recursive: true,
+      filter: (srcPath) => !shouldExclude(srcPath)
+    });
+  } else {
+    ensureDir(path.dirname(dest));
+    fs.copyFileSync(src, dest);
+  }
+}
 
-  function removePattern(dir, patterns) {
-    if (!fs.existsSync(dir)) return;
+function copyAll() {
+  logStep('复制源码与配置');
+  COPY_TARGETS.forEach(copyTarget);
+  console.log('✅ 文件复制完成');
+}
 
-    const entries = fs.readdirSync(dir, { withFileTypes: true });
+function detectPackageManager() {
+  const has = (cmd) => {
+    try {
+      execSync(`${cmd} --version`, { stdio: 'ignore' });
+      return true;
+    } catch {
+      return false;
+    }
+  };
 
-    for (const entry of entries) {
-      const entryPath = path.join(dir, entry.name);
-      const relativePath = path.relative(nodeModulesPath, entryPath);
+  if (has('pnpm') && fs.existsSync(path.join(ROOT, 'pnpm-lock.yaml'))) return 'pnpm';
+  if (has('yarn') && fs.existsSync(path.join(ROOT, 'yarn.lock'))) return 'yarn';
+  return 'npm';
+}
 
-      // 检查是否匹配删除模式
-      let shouldRemove = false;
-      for (const pattern of patterns) {
-        const regex = new RegExp(
-          pattern.replace(/\*\*/g, '.*').replace(/\*/g, '[^/]*')
-        );
-        if (regex.test(relativePath) || regex.test(entry.name)) {
-          shouldRemove = true;
-          break;
-        }
-      }
+function writeMinimalPackageJson() {
+  const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf-8'));
+  const minimal = {
+    name: pkg.name,
+    version: pkg.version,
+    type: pkg.type,
+    scripts: {
+      start: pkg.scripts?.start || 'node index.js'
+    },
+    // 保留 devDependencies 以满足 pnpm-lock 的 spec 匹配，
+    // 安装时依然使用 --prod，不会安装 dev 依赖。
+    dependencies: pkg.dependencies || {},
+    devDependencies: pkg.devDependencies || {}
+  };
 
-      if (shouldRemove) {
-        try {
-          if (entry.isDirectory()) {
-            fs.rmSync(entryPath, { recursive: true, force: true });
-          } else {
-            fs.unlinkSync(entryPath);
-          }
-        } catch (err) {
-          // 忽略删除错误
-        }
-      } else if (entry.isDirectory()) {
-        removePattern(entryPath, patterns);
-      }
+  fs.writeFileSync(path.join(STAGE_DIR, 'package.json'), JSON.stringify(minimal, null, 2));
+  console.log('✅ 已生成精简 package.json');
+}
+
+function copyLockFile(pm) {
+  const lock = LOCK_FILE_MAP[pm];
+  if (!lock) return;
+  const src = path.join(ROOT, lock);
+  if (fs.existsSync(src)) {
+    fs.copyFileSync(src, path.join(STAGE_DIR, lock));
+    console.log(`✅ 已复制锁文件: ${lock}`);
+  }
+}
+
+function installDeps(pm) {
+  logStep(`安装生产依赖（${pm}）`);
+  const cwd = process.cwd();
+  process.chdir(STAGE_DIR);
+
+  const commands = {
+    pnpm: ['pnpm install --prod --frozen-lockfile', 'pnpm install --prod'],
+    yarn: ['yarn install --production --frozen-lockfile'],
+    npm: ['npm ci --omit=dev', 'npm install --omit=dev']
+  }[pm] || ['npm ci --omit=dev'];
+
+  let success = false;
+  for (const cmd of commands) {
+    try {
+      execSync(cmd, { stdio: 'inherit' });
+      success = true;
+      break;
+    } catch (e) {
+      console.warn(`⚠️  命令失败，尝试下一条：${cmd}`);
     }
   }
 
-  removePattern(nodeModulesPath, patternsToRemove);
-  console.log('✅ node_modules 优化完成');
+  process.chdir(cwd);
+  if (!success) throw new Error('生产依赖安装失败');
+  console.log('✅ 生产依赖安装完成');
+
+  // 确认关键依赖已就绪（避免打出的包缺少 express 等）
+  const mustHave = ['express'];
+  for (const dep of mustHave) {
+    const depPath = path.join(STAGE_DIR, 'node_modules', dep);
+    if (!fs.existsSync(depPath)) {
+      throw new Error(`依赖缺失：${dep} 未安装成功，请检查安装日志`);
+    }
+  }
 }
 
-/**
- * 主函数
- */
+function cleanNodeModules() {
+  logStep('瘦身 node_modules');
+  const base = path.join(STAGE_DIR, 'node_modules');
+  if (!fs.existsSync(base)) return;
+
+  const walk = (dir) => {
+    if (!fs.existsSync(dir)) return;
+    const entries = fs.readdirSync(dir, { withFileTypes: true });
+    for (const entry of entries) {
+      const abs = path.join(dir, entry.name);
+      const rel = toPosix(path.relative(base, abs));
+      const match = NODEMODULES_CLEAN_PATTERNS.some((pattern) => {
+        const regex = new RegExp(
+          pattern
+            .replace(/[.+?^${}()|[\]\\]/g, '\\$&')
+            .replace(/\*\*/g, '.*')
+            .replace(/\*/g, '[^/]*')
+        );
+        return regex.test(rel) || regex.test(entry.name);
+      });
+
+      if (match) {
+        try {
+          if (entry.isDirectory()) {
+            fs.rmSync(abs, { recursive: true, force: true });
+          } else {
+            fs.unlinkSync(abs);
+          }
+        } catch {
+          // ignore cleanup errors
+        }
+      } else if (entry.isDirectory()) {
+        walk(abs);
+      }
+    }
+  };
+
+  walk(base);
+  console.log('✅ node_modules 瘦身完成');
+}
+
+async function createArchives() {
+  logStep('生成压缩包（zip）');
+  const stamp = new Date().toISOString().replace(/[:.]/g, '').replace('T', '-').slice(0, 15);
+  const baseName = `ai-node-${stamp}`;
+
+  const createOne = (format, options, ext) =>
+    new Promise((resolve, reject) => {
+      const outputPath = path.join(DIST_DIR, `${baseName}.${ext}`);
+      const output = fs.createWriteStream(outputPath);
+      const archive = archiver(format, options);
+
+      output.on('close', () => {
+        const sizeMB = (archive.pointer() / 1024 / 1024).toFixed(2);
+        console.log(`✅ ${ext} -> ${outputPath} (${sizeMB} MB)`);
+        resolve(outputPath);
+      });
+      archive.on('error', reject);
+
+      archive.pipe(output);
+      // 打包时保留 ai-node 根目录，解压后直接得到 ai-node/
+      archive.directory(STAGE_DIR, 'ai-node');
+      archive.finalize();
+    });
+
+  await createOne('zip', { zlib: { level: 9 } }, 'zip');
+  // await createOne('tar', { gzip: true, gzipOptions: { level: 9 } }, 'tar.gz');
+}
+
 async function main() {
   try {
-    console.log('🚀 开始打包...\n');
+    console.log('🚀 开始构建 Linux 部署包');
 
-    // 检测包管理器
-    const packageManager = detectPackageManager();
-    console.log(`📦 检测到包管理器: ${packageManager}\n`);
+    cleanDist();
+    copyAll();
+    writeMinimalPackageJson();
 
-    // 1. 清理构建目录
-    cleanBuildDir();
+    const pm = detectPackageManager();
+    console.log(`📦 使用的包管理器: ${pm}`);
+    copyLockFile(pm);
+    if (INSTALL_NODE_MODULES) {
+      installDeps(pm);
+      cleanNodeModules();
+    } else {
+      console.log('⏭️ 跳过本地安装依赖，部署时执行 npm/yarn/pnpm 安装');
+    }
+    await createArchives();
 
-    // 2. 复制文件
-    copyFiles();
-
-    // 3. 创建精简的 package.json
-    createMinimalPackageJson();
-
-    // 4. 复制锁文件
-    copyLockFile(packageManager);
-
-    // 5. 安装生产依赖
-    installDependencies(packageManager);
-
-    // 6. 优化 node_modules（删除不必要的文件）
-    optimizeNodeModules();
-
-    // 7. 创建压缩包
-    await createArchive();
-
-    console.log('\n✨ 打包完成！');
-    console.log('\n📋 部署步骤:');
-    console.log('1. 将压缩包上传到 Linux 服务器');
-    console.log('2. 解压: unzip ai-node-*.zip -d /path/to/deploy');
-    console.log('3. 进入目录: cd /path/to/deploy/ai-node');
-    console.log('4. 启动 PM2: pm2 start ecosystem.config.cjs');
-    console.log('5. 保存 PM2 配置: pm2 save');
-    console.log('6. 设置开机自启: pm2 startup');
-    console.log('\n💡 提示: 打包已优化，移除了不必要的文件以减小体积');
-    console.log('💡 提示: 解压后会生成 ai-node 目录，包含所有部署文件');
-
-  } catch (error) {
-    console.error('\n❌ 打包失败:', error);
+    console.log('\n✨ 打包完成，部署步骤：');
+    console.log('1) 上传 dist/ai-node-*.zip 至 CentOS');
+    console.log('2) 解压：unzip ai-node-*.zip -d /opt');
+    console.log('3) 进入目录：cd /opt/ai-node');
+    console.log('4) 安装依赖：npm install --omit=dev （或 pnpm install --prod / yarn install --production）');
+    console.log('5) 使用 PM2：pm2 start ecosystem.config.cjs && pm2 save && pm2 startup');
+  } catch (err) {
+    console.error('❌ 构建失败：', err?.message || err);
     process.exit(1);
   }
 }
