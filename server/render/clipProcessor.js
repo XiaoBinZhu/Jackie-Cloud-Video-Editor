@@ -36,7 +36,6 @@ const SYSTEM_FONT_CANDIDATES = [
 
 // 最终使用的字体回退链（优先 RegisteredN -> Noto Sans SC）
 const FONT_FAMILY_FALLBACK = [
-  REGISTERED_FONT_FAMILY,
   'Noto Sans SC',
   'Noto Sans CJK SC',
   'Source Han Sans SC',
@@ -48,6 +47,7 @@ const FONT_FAMILY_FALLBACK = [
 ].join(', ');
 
 let registeredFontFamily = null;
+let registeredFontLoaded = false;
 
 // 动态加载 canvas（ESM 兼容）
 const loadCanvasRegisterFont = () => {
@@ -66,7 +66,8 @@ const registerChineseFont = () => {
   const registerFont = loadCanvasRegisterFont();
   if (!registerFont) {
     logger.warn('[字体] canvas 未安装或无 registerFont 方法，使用系统回退');
-    registeredFontFamily = REGISTERED_FONT_FAMILY;
+    registeredFontFamily = null;
+    registeredFontLoaded = false;
     return false;
   }
 
@@ -76,6 +77,7 @@ const registerChineseFont = () => {
     try {
       registerFont(bundled, { family: REGISTERED_FONT_FAMILY });
       registeredFontFamily = REGISTERED_FONT_FAMILY;
+      registeredFontLoaded = true;
       logger.info(`[字体] ✅ 成功注册内置 Noto Sans SC 字体: ${bundled}`);
       return true;
     } catch (e) {
@@ -91,6 +93,7 @@ const registerChineseFont = () => {
     try {
       registerFont(envFontFile, { family: REGISTERED_FONT_FAMILY });
       registeredFontFamily = REGISTERED_FONT_FAMILY;
+      registeredFontLoaded = true;
       logger.info(`[字体] ✅ 成功注册环境变量指定字体: ${envFontFile}`);
       return true;
     } catch (e) {
@@ -104,6 +107,7 @@ const registerChineseFont = () => {
     try {
       registerFont(found, { family: REGISTERED_FONT_FAMILY });
       registeredFontFamily = REGISTERED_FONT_FAMILY;
+      registeredFontLoaded = true;
       logger.info(`[字体] ✅ 成功注册系统中文字体: ${found}`);
       return true;
     } catch (e) {
@@ -115,7 +119,8 @@ const registerChineseFont = () => {
 
   // 4. 最终回退
   logger.info(`[字体] 使用字体回退链: ${FONT_FAMILY_FALLBACK}`);
-  registeredFontFamily = REGISTERED_FONT_FAMILY;
+  registeredFontFamily = null;
+  registeredFontLoaded = false;
   return false;
 };
 
@@ -545,7 +550,7 @@ export function processTextClip(clip, canvasWidth, canvasHeight, segmentDuration
   // 设置样式（必须在获取尺寸之前设置）
   // 提供可覆盖的中文字体回退，避免在缺字场景渲染成方块
   // 优先使用注册的中文字体，支持环境变量覆盖
-  const fontFamily = registeredFontFamily || getFontFamily();
+  const fontFamily = registeredFontLoaded ? REGISTERED_FONT_FAMILY : getFontFamily();
 
   try {
     text.setStyle({
