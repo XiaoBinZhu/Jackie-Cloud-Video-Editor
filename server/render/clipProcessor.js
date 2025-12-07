@@ -7,31 +7,37 @@ import { resolveAssetPath, getVideoDimensions, calculateContainSize, calculateCo
 import { logger } from '../utils/logger.js';
 import path from 'path';
 import fs from 'fs';
-// 在某些发行版上，ffcreatorlite 依赖的 node-canvas 需要先 registerFont 才能识别系统字体
-// 这里尝试注册常见的中文字体文件（存在才注册，不存在则跳过）
+// 在部分 Linux 发行版，必须先通过 node-canvas 的 registerFont 才能让 FFText 识别中文字体。
+// 这里优先注册一个明确的家族名 RegisteredNotoSansSC，避免 fallback 仍然命中无中文的字体。
+// 支持通过环境变量 FONT_FILE 指定一个可读的 TTF/OTF/TTC 字体文件，从而完全不依赖系统字体。
+let registeredFontFamily = 'RegisteredNotoSansSC';
 try {
-  // 延迟引入，避免在无 canvas 环境时报错
   // eslint-disable-next-line global-require
   const { registerFont } = require('canvas');
+  const envFontFile = process.env.FONT_FILE;
   const fontCandidates = [
-    { file: '/usr/share/fonts/google-noto-cjk/NotoSansCJK-Regular.ttc', family: 'Noto Sans CJK SC' },
-    { file: '/usr/share/fonts/google-noto-cjk/NotoSansCJK-Light.ttc', family: 'Noto Sans CJK SC Light' },
-    { file: '/usr/share/fonts/google-noto-cjk/NotoSansCJK-Bold.ttc', family: 'Noto Sans CJK SC' },
-    { file: '/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc', family: 'Noto Sans CJK SC' },
-    { file: '/usr/share/fonts/opentype/noto/NotoSansSC-Regular.otf', family: 'Noto Sans SC' },
-  ];
-  fontCandidates.forEach(({ file, family }) => {
-    if (fs.existsSync(file)) {
-      try {
-        registerFont(file, { family });
-        logger?.info?.(`[字体] 已注册字体: ${family} (${file})`);
-      } catch (e) {
-        logger?.warn?.(`[字体] 注册字体失败 ${family}: ${e.message}`);
-      }
-    }
-  });
+    envFontFile,
+    '/usr/share/fonts/google-noto-cjk/NotoSansCJK-Regular.ttc',
+    '/usr/share/fonts/google-noto-cjk/NotoSansCJK-Medium.ttc',
+    '/usr/share/fonts/google-noto-cjk/NotoSansCJK-Light.ttc',
+    '/usr/share/fonts/google-noto-cjk/NotoSansCJK-Bold.ttc',
+    '/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc',
+    '/usr/share/fonts/opentype/noto/NotoSansSC-Regular.otf',
+  ].filter(Boolean);
+
+  const found = fontCandidates.find((file) => fs.existsSync(file));
+  if (found) {
+    const family = process.env.FONT_FAMILY || registeredFontFamily;
+    registerFont(found, { family });
+    registeredFontFamily = family;
+    logger?.info?.(`[字体] 已注册中文字体: ${family} (${found})`);
+  } else {
+    logger?.warn?.('[字体] 未找到可注册的 Noto/思源字体文件，仍将使用系统匹配');
+    registeredFontFamily = process.env.FONT_FAMILY || 'Noto Sans CJK SC';
+  }
 } catch (e) {
-  // 若未安装 canvas 或不需要注册，忽略
+  logger?.warn?.(`[字体] registerFont 跳过: ${e.message}`);
+  registeredFontFamily = process.env.FONT_FAMILY || 'Noto Sans CJK SC';
 }
 
 /**
@@ -453,8 +459,10 @@ export function processTextClip(clip, canvasWidth, canvasHeight, segmentDuration
 
   // 设置样式（必须在获取尺寸之前设置）
   // 提供可覆盖的中文字体回退，避免在缺字场景渲染成方块
+  // 优先使用注册的中文字体，支持环境变量覆盖
   const fontFamily =
     process.env.FONT_FAMILY ||
+    registeredFontFamily ||
     'Noto Sans CJK SC, Noto Sans SC, Source Han Sans SC, WenQuanYi Micro Hei, Microsoft YaHei, Arial Unicode MS, Arial, sans-serif';
 
   try {

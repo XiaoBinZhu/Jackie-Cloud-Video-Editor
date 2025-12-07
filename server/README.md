@@ -54,7 +54,7 @@ npm start
 
 ### 1. 创建视频合成任务
 
-**POST** `/api-node/video/create`
+**POST** `/node-api/video/create`
 
 **请求体：**
 
@@ -102,7 +102,7 @@ npm start
 
 ### 2. 查询任务状态
 
-**GET** `/api-node/video/:taskId/status`
+**GET** `/node-api/video/:taskId/status`
 
 **响应：**
 
@@ -127,7 +127,7 @@ npm start
 
 ### 3. 获取合成结果
 
-**GET** `/api-node/video/:taskId/result`
+**GET** `/node-api/video/:taskId/result`
 
 **响应：**
 
@@ -143,19 +143,19 @@ npm start
 
 ### 4. 下载视频文件
 
-**GET** `/api-node/video/:taskId/download`
+**GET** `/node-api/video/:taskId/download`
 
 直接下载视频文件。
 
 ### 5. 删除任务
 
-**DELETE** `/api-node/video/:taskId`
+**DELETE** `/node-api/video/:taskId`
 
 删除任务及其相关文件。
 
 ### 6. 健康检查
 
-**GET** `/api-node/health`
+**GET** `/node-api/health`
 
 检查服务状态。
 
@@ -205,7 +205,7 @@ node tests/test-render-api.js
 
 ```javascript
 // 1. 创建任务
-const response = await fetch('http://localhost:3001/api-node/video/create', {
+const response = await fetch('http://localhost:3001/node-api/video/create', {
   method: 'POST',
   headers: { 'Content-Type': 'application/json' },
   body: JSON.stringify({
@@ -230,7 +230,7 @@ const { taskId } = await response.json();
 
 // 2. 轮询状态
 while (true) {
-  const status = await fetch(`http://localhost:3001/api-node/video/${taskId}/status`);
+  const status = await fetch(`http://localhost:3001/node-api/video/${taskId}/status`);
   const data = await status.json();
   
   if (data.status === 'completed') {
@@ -243,7 +243,7 @@ while (true) {
 }
 
 // 3. 获取结果
-const result = await fetch(`http://localhost:3001/api-node/video/${taskId}/result`);
+const result = await fetch(`http://localhost:3001/node-api/video/${taskId}/result`);
 const { data } = await result.json();
 // data 是 Base64 格式的视频数据
 ```
@@ -252,7 +252,7 @@ const { data } = await result.json();
 
 ```bash
 # 创建任务
-curl -X POST http://localhost:3001/api-node/video/create \
+curl -X POST http://localhost:3001/node-api/video/create \
   -H "Content-Type: application/json" \
   -d '{
     "settings": {
@@ -272,10 +272,10 @@ curl -X POST http://localhost:3001/api-node/video/create \
   }'
 
 # 查询状态
-curl http://localhost:3001/api-node/video/{taskId}/status
+curl http://localhost:3001/node-api/video/{taskId}/status
 
 # 获取结果
-curl http://localhost:3001/api-node/video/{taskId}/result
+curl http://localhost:3001/node-api/video/{taskId}/result
 ```
 
 ## 注意事项

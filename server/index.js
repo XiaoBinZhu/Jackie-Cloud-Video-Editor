@@ -50,17 +50,17 @@ app.use(express.json({ limit: '50mb' }));
 app.use('/output', express.static(DIRS.output));
 
 // 注册路由
-app.use('/api-node/video', videoRoutes);
+app.use('/node-api/video', videoRoutes);
 
-// 兼容原有接口：/api-node/merge（向后兼容）
+// 兼容原有接口：/node-api/merge（向后兼容）
 // 保持原有功能可用，原有代码无需修改
-app.use('/api-node/merge', mergeRoutes);
+app.use('/node-api/merge', mergeRoutes);
 
 /**
  * 健康检查
- * GET /api-node/health
+ * GET /node-api/health
  */
-app.get('/api-node/health', (req, res) => {
+app.get('/node-api/health', (req, res) => {
   res.json({
     status: 'ok',
     timestamp: new Date().toISOString(),

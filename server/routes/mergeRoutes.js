@@ -1,5 +1,5 @@
 /**
- * 兼容原有接口：/api-node/merge
+ * 兼容原有接口：/node-api/merge
  * 保持向后兼容，原有功能继续可用
  */
 import express from 'express';
@@ -16,7 +16,7 @@ const router = express.Router();
 
 /**
  * 创建视频合并任务（原有接口）
- * POST /api-node/merge
+ * POST /node-api/merge
  */
 router.post('/', async (req, res, next) => {
     try {
@@ -43,7 +43,7 @@ router.post('/', async (req, res, next) => {
 
 /**
  * 查询任务状态（原有接口）
- * GET /api-node/merge/:taskId/status
+ * GET /node-api/merge/:taskId/status
  */
 router.get('/:taskId/status', (req, res, next) => {
     try {
@@ -62,7 +62,7 @@ router.get('/:taskId/status', (req, res, next) => {
 
 /**
  * 获取合成结果（原有接口）
- * GET /api-node/merge/:taskId/result
+ * GET /node-api/merge/:taskId/result
  */
 router.get('/:taskId/result', (req, res, next) => {
     try {
@@ -85,7 +85,7 @@ router.get('/:taskId/result', (req, res, next) => {
 
 /**
  * 下载视频文件（原有接口）
- * GET /api-node/merge/:taskId/download
+ * GET /node-api/merge/:taskId/download
  */
 router.get('/:taskId/download', (req, res, next) => {
     try {
@@ -111,7 +111,7 @@ router.get('/:taskId/download', (req, res, next) => {
 
 /**
  * 删除任务（原有接口）
- * DELETE /api-node/merge/:taskId
+ * DELETE /node-api/merge/:taskId
  */
 router.delete('/:taskId', (req, res, next) => {
     try {
