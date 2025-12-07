@@ -7,38 +7,123 @@ import { resolveAssetPath, getVideoDimensions, calculateContainSize, calculateCo
 import { logger } from '../utils/logger.js';
 import path from 'path';
 import fs from 'fs';
-// 在部分 Linux 发行版，必须先通过 node-canvas 的 registerFont 才能让 FFText 识别中文字体。
-// 这里优先注册一个明确的家族名 RegisteredNotoSansSC，避免 fallback 仍然命中无中文的字体。
-// 支持通过环境变量 FONT_FILE 指定一个可读的 TTF/OTF/TTC 字体文件，从而完全不依赖系统字体。
-let registeredFontFamily = 'RegisteredNotoSansSC';
-try {
-  // eslint-disable-next-line global-require
-  const { registerFont } = require('canvas');
-  const envFontFile = process.env.FONT_FILE;
-  const fontCandidates = [
-    envFontFile,
-    '/usr/share/fonts/google-noto-cjk/NotoSansCJK-Regular.ttc',
-    '/usr/share/fonts/google-noto-cjk/NotoSansCJK-Medium.ttc',
-    '/usr/share/fonts/google-noto-cjk/NotoSansCJK-Light.ttc',
-    '/usr/share/fonts/google-noto-cjk/NotoSansCJK-Bold.ttc',
-    '/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc',
-    '/usr/share/fonts/opentype/noto/NotoSansSC-Regular.otf',
-  ].filter(Boolean);
+import { createRequire } from 'module';
 
-  const found = fontCandidates.find((file) => fs.existsSync(file));
-  if (found) {
-    const family = process.env.FONT_FAMILY || registeredFontFamily;
-    registerFont(found, { family });
-    registeredFontFamily = family;
-    logger?.info?.(`[字体] 已注册中文字体: ${family} (${found})`);
-  } else {
-    logger?.warn?.('[字体] 未找到可注册的 Noto/思源字体文件，仍将使用系统匹配');
-    registeredFontFamily = process.env.FONT_FAMILY || 'Noto Sans CJK SC';
+// ==================== 字体注册核心逻辑（优先使用项目内置 TTF） ====================
+// 注册的字体家族名（唯一，避免冲突）
+const REGISTERED_FONT_FAMILY = 'RegisteredN';
+
+// 内置字体路径（优先使用 server/assets/NotoSansSC-Regular.ttf）
+const BUNDLED_FONT_CANDIDATES = [
+  path.resolve(process.cwd(), 'server', 'assets', 'NotoSansSC-Regular.ttf'),
+  path.resolve(process.cwd(), 'assets', 'NotoSansSC-Regular.ttf'),
+];
+
+// 系统常见中文字体路径（兜底）
+const SYSTEM_FONT_CANDIDATES = [
+  // CentOS / RHEL 常见路径
+  '/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc',
+  '/usr/share/fonts/noto-cjk/NotoSansSC-Regular.otf',
+  '/usr/share/fonts/wqy-zenhei/wqy-zenhei.ttc',
+  // Debian/Ubuntu 常见路径
+  '/usr/share/fonts/google-noto-cjk/NotoSansCJK-Regular.ttc',
+  '/usr/share/fonts/google-noto-cjk/NotoSansCJK-Medium.ttc',
+  '/usr/share/fonts/google-noto-cjk/NotoSansCJK-Light.ttc',
+  '/usr/share/fonts/google-noto-cjk/NotoSansCJK-Bold.ttc',
+  '/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc',
+  '/usr/share/fonts/opentype/noto/NotoSansSC-Regular.otf',
+];
+
+// 最终使用的字体回退链（优先 RegisteredN -> Noto Sans SC）
+const FONT_FAMILY_FALLBACK = [
+  REGISTERED_FONT_FAMILY,
+  'Noto Sans SC',
+  'Noto Sans CJK SC',
+  'Source Han Sans SC',
+  'WenQuanYi Micro Hei',
+  'Microsoft YaHei',
+  'Arial Unicode MS',
+  'Arial',
+  'sans-serif',
+].join(', ');
+
+let registeredFontFamily = null;
+
+// 动态加载 canvas（ESM 兼容）
+const loadCanvasRegisterFont = () => {
+  const localRequire = typeof require === 'function' ? require : createRequire(import.meta.url);
+  try {
+    const canvas = localRequire('canvas');
+    return typeof canvas.registerFont === 'function' ? canvas.registerFont : null;
+  } catch (e) {
+    logger.warn(`[字体] 加载 canvas 失败: ${e.message}`);
+    return null;
   }
-} catch (e) {
-  logger?.warn?.(`[字体] registerFont 跳过: ${e.message}`);
-  registeredFontFamily = process.env.FONT_FAMILY || 'Noto Sans CJK SC';
-}
+};
+
+// 主字体注册函数（优先内置 TTF -> 环境变量 -> 系统 -> 回退）
+const registerChineseFont = () => {
+  const registerFont = loadCanvasRegisterFont();
+  if (!registerFont) {
+    logger.warn('[字体] canvas 未安装或无 registerFont 方法，使用系统回退');
+    registeredFontFamily = REGISTERED_FONT_FAMILY;
+    return false;
+  }
+
+  // 1. 优先注册项目内置 Noto Sans SC TTF 字体
+  const bundled = BUNDLED_FONT_CANDIDATES.find((file) => fs.existsSync(file));
+  if (bundled) {
+    try {
+      registerFont(bundled, { family: REGISTERED_FONT_FAMILY });
+      registeredFontFamily = REGISTERED_FONT_FAMILY;
+      logger.info(`[字体] ✅ 成功注册内置 Noto Sans SC 字体: ${bundled}`);
+      return true;
+    } catch (e) {
+      logger.warn(`[字体] 注册内置字体失败: ${e.message}`);
+    }
+  } else {
+    logger.warn(`[字体] ⚠️ 未找到内置字体: ${BUNDLED_FONT_CANDIDATES.join(' | ')}`);
+  }
+
+  // 2. 环境变量指定的字体文件（可覆盖）
+  const envFontFile = process.env.FONT_FILE;
+  if (envFontFile && fs.existsSync(envFontFile)) {
+    try {
+      registerFont(envFontFile, { family: REGISTERED_FONT_FAMILY });
+      registeredFontFamily = REGISTERED_FONT_FAMILY;
+      logger.info(`[字体] ✅ 成功注册环境变量指定字体: ${envFontFile}`);
+      return true;
+    } catch (e) {
+      logger.warn(`[字体] 注册环境变量字体失败: ${e.message}`);
+    }
+  }
+
+  // 3. 尝试注册系统字体
+  const found = SYSTEM_FONT_CANDIDATES.find((file) => fs.existsSync(file));
+  if (found) {
+    try {
+      registerFont(found, { family: REGISTERED_FONT_FAMILY });
+      registeredFontFamily = REGISTERED_FONT_FAMILY;
+      logger.info(`[字体] ✅ 成功注册系统中文字体: ${found}`);
+      return true;
+    } catch (e) {
+      logger.warn(`[字体] 注册系统中文字体失败: ${e.message}`);
+    }
+  } else {
+    logger.info('[字体] 未找到任何系统中文字体文件');
+  }
+
+  // 4. 最终回退
+  logger.info(`[字体] 使用字体回退链: ${FONT_FAMILY_FALLBACK}`);
+  registeredFontFamily = REGISTERED_FONT_FAMILY;
+  return false;
+};
+
+// 启动时注册一次
+registerChineseFont();
+
+// 导出字体家族字符串（供 FFText 使用）
+export const getFontFamily = () => FONT_FAMILY_FALLBACK;
 
 /**
  * 处理视频片段
@@ -460,10 +545,7 @@ export function processTextClip(clip, canvasWidth, canvasHeight, segmentDuration
   // 设置样式（必须在获取尺寸之前设置）
   // 提供可覆盖的中文字体回退，避免在缺字场景渲染成方块
   // 优先使用注册的中文字体，支持环境变量覆盖
-  const fontFamily =
-    process.env.FONT_FAMILY ||
-    registeredFontFamily ||
-    'Noto Sans CJK SC, Noto Sans SC, Source Han Sans SC, WenQuanYi Micro Hei, Microsoft YaHei, Arial Unicode MS, Arial, sans-serif';
+  const fontFamily = registeredFontFamily || getFontFamily();
 
   try {
     text.setStyle({

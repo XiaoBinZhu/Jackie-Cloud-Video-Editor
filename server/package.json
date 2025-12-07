@@ -10,13 +10,14 @@
     "pack:linux": "npm install --platform=linux --arch=x64 && npx pkg ."
   },
   "dependencies": {
-    "express": "^4.18.2",
-    "cors": "^2.8.5",
-    "ffcreatorlite": "^2.5.1",
-    "uuid": "^9.0.0",
     "@ffmpeg-installer/ffmpeg": "^1.1.0",
+    "@ffprobe-installer/ffprobe": "^1.4.0",
+    "canvas": "^3.2.0",
+    "cors": "^2.8.5",
+    "express": "^4.18.2",
+    "ffcreatorlite": "^2.5.1",
     "fluent-ffmpeg": "^2.1.2",
-    "@ffprobe-installer/ffprobe": "^1.4.0"
+    "uuid": "^9.0.0"
   },
   "pkg": {
     "targets": [
