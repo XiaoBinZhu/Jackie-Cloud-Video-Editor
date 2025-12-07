@@ -233,19 +233,38 @@ function installDependencies(packageManager) {
     let command;
     switch (packageManager) {
       case 'pnpm':
-        command = 'pnpm install --prod --frozen-lockfile --silent';
+        // 先尝试使用 frozen-lockfile，如果失败则回退到普通安装
+        command = 'pnpm install --prod --frozen-lockfile';
         break;
       case 'yarn':
-        command = 'yarn install --production --frozen-lockfile --silent';
+        command = 'yarn install --production --frozen-lockfile';
         break;
       default:
-        command = 'npm ci --production --silent';
+        command = 'npm ci --production';
     }
 
-    execSync(command, { stdio: 'inherit' });
-    console.log('✅ 依赖安装完成');
+    try {
+      execSync(command, { stdio: 'inherit', encoding: 'utf-8' });
+      console.log('✅ 依赖安装完成');
+    } catch (installError) {
+      // 如果是 frozen-lockfile 错误，尝试不使用该选项
+      if (packageManager === 'pnpm' && command.includes('--frozen-lockfile')) {
+        console.warn('⚠️  frozen-lockfile 安装失败，尝试普通安装...');
+        command = 'pnpm install --prod';
+        execSync(command, { stdio: 'inherit', encoding: 'utf-8' });
+        console.log('✅ 依赖安装完成（使用普通安装模式）');
+      } else {
+        throw installError;
+      }
+    }
   } catch (error) {
     console.error('❌ 依赖安装失败:', error.message);
+    if (error.stdout) {
+      console.error('标准输出:', error.stdout);
+    }
+    if (error.stderr) {
+      console.error('错误输出:', error.stderr);
+    }
     throw error;
   } finally {
     process.chdir(PROJECT_ROOT);
