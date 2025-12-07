@@ -1,0 +1,44 @@
+# 开发文件
+*.log
+*.test.js
+*.spec.js
+test-*.js
+
+# 构建产物
+dist/
+build/
+
+# 运行时目录
+output/
+cache/
+uploads/
+logs/
+
+# 开发工具
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# 系统文件
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# 环境变量
+.env
+.env.local
+.env.*.local
+
+# Git
+.git/
+.gitignore
+
+# 依赖（打包时会重新安装）
+node_modules/
+
+# 其他
+*.md
+!README.md
+API.md

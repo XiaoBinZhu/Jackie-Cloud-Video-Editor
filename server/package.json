@@ -4,7 +4,9 @@
   "type": "module",
   "scripts": {
     "start": "node index.js",
-    "dev": "node --watch index.js"
+    "dev": "node --watch index.js",
+    "build": "node build.js",
+    "build:pack": "node build.js"
   },
   "dependencies": {
     "express": "^4.18.2",
@@ -14,5 +16,8 @@
     "@ffmpeg-installer/ffmpeg": "^1.1.0",
     "fluent-ffmpeg": "^2.1.2",
     "@ffprobe-installer/ffprobe": "^1.4.0"
+  },
+  "devDependencies": {
+    "archiver": "^7.0.1"
   }
 }
