@@ -7,6 +7,32 @@ import { resolveAssetPath, getVideoDimensions, calculateContainSize, calculateCo
 import { logger } from '../utils/logger.js';
 import path from 'path';
 import fs from 'fs';
+// 在某些发行版上，ffcreatorlite 依赖的 node-canvas 需要先 registerFont 才能识别系统字体
+// 这里尝试注册常见的中文字体文件（存在才注册，不存在则跳过）
+try {
+  // 延迟引入，避免在无 canvas 环境时报错
+  // eslint-disable-next-line global-require
+  const { registerFont } = require('canvas');
+  const fontCandidates = [
+    { file: '/usr/share/fonts/google-noto-cjk/NotoSansCJK-Regular.ttc', family: 'Noto Sans CJK SC' },
+    { file: '/usr/share/fonts/google-noto-cjk/NotoSansCJK-Light.ttc', family: 'Noto Sans CJK SC Light' },
+    { file: '/usr/share/fonts/google-noto-cjk/NotoSansCJK-Bold.ttc', family: 'Noto Sans CJK SC' },
+    { file: '/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc', family: 'Noto Sans CJK SC' },
+    { file: '/usr/share/fonts/opentype/noto/NotoSansSC-Regular.otf', family: 'Noto Sans SC' },
+  ];
+  fontCandidates.forEach(({ file, family }) => {
+    if (fs.existsSync(file)) {
+      try {
+        registerFont(file, { family });
+        logger?.info?.(`[字体] 已注册字体: ${family} (${file})`);
+      } catch (e) {
+        logger?.warn?.(`[字体] 注册字体失败 ${family}: ${e.message}`);
+      }
+    }
+  });
+} catch (e) {
+  // 若未安装 canvas 或不需要注册，忽略
+}
 
 /**
  * 处理视频片段
@@ -426,11 +452,16 @@ export function processTextClip(clip, canvasWidth, canvasHeight, segmentDuration
   });
 
   // 设置样式（必须在获取尺寸之前设置）
+  // 提供可覆盖的中文字体回退，避免在缺字场景渲染成方块
+  const fontFamily =
+    process.env.FONT_FAMILY ||
+    'Noto Sans CJK SC, Noto Sans SC, Source Han Sans SC, WenQuanYi Micro Hei, Microsoft YaHei, Arial Unicode MS, Arial, sans-serif';
+
   try {
     text.setStyle({
       fill: fontColor,
       fontSize,
-      fontFamily: 'Arial, Helvetica, sans-serif',
+      fontFamily,
       fontWeight: fontWeight === 'bold' ? 'bold' : 'normal',
       stroke: strokeColor,
       strokeThickness: strokeWidth,
@@ -459,7 +490,7 @@ export function processTextClip(clip, canvasWidth, canvasHeight, segmentDuration
       text.setStyle({
         fill: fontColor,
         fontSize,
-        fontFamily: 'Arial, Helvetica, sans-serif',
+        fontFamily,
         fontWeight: fontWeight === 'bold' ? 'bold' : 'normal',
         stroke: strokeColor,
         strokeThickness: strokeWidth,
