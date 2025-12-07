@@ -11,8 +11,8 @@ const PROJECT_ROOT = path.resolve(__dirname, '..');
 
 // 服务器配置
 export const SERVER_CONFIG = {
-  port: parseInt(process.env.PORT, 10) || 3001,
-  host: process.env.HOST || 'localhost',
+  port: 8089,
+  host: '0.0.0.0',
 };
 
 // 目录配置
