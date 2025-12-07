@@ -3,8 +3,8 @@
  * 使用方法: node test-merge-api.js
  * 
  * 支持新旧两种接口：
- * - 新接口：/api/video (推荐)
- * - 旧接口：/api/merge (向后兼容)
+ * - 新接口：/api-node/video (推荐)
+ * - 旧接口：/api-node/merge (向后兼容)
  * 
  * 可通过环境变量切换接口：
  * USE_NEW_API=true node test-merge-api.js  # 使用新接口
@@ -14,12 +14,12 @@
 // 支持新旧两种接口
 const USE_NEW_API = process.env.USE_NEW_API !== 'false'; // 默认使用新接口
 const API_URL = USE_NEW_API
-    ? 'http://localhost:3001/api/video'
-    : 'http://localhost:3001/api/merge';
+    ? 'http://localhost:3001/api-node/video'
+    : 'http://localhost:3001/api-node/merge';
 
 // 服务器配置
 const SERVER_URL = 'http://localhost:3001';
-const HEALTH_CHECK_URL = `${SERVER_URL}/api/health`;
+const HEALTH_CHECK_URL = `${SERVER_URL}/api-node/health`;
 
 // 测试数据（使用 OSS 视频链接）
 const testRequest = {
@@ -124,7 +124,7 @@ async function createVideoTask() {
 
         const endpoint = USE_NEW_API ? `${API_URL}/create` : `${API_URL}`;
         console.log(`   接口地址: ${endpoint}`);
-        console.log(`   使用接口: ${USE_NEW_API ? '新接口 (/api/video)' : '原有接口 (/api/merge)'}\n`);
+        console.log(`   使用接口: ${USE_NEW_API ? '新接口 (/api-node/video)' : '原有接口 (/api-node/merge)'}\n`);
 
         const response = await fetch(endpoint, {
             method: 'POST',

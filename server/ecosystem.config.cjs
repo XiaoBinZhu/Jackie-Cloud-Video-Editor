@@ -6,7 +6,19 @@ module.exports = {
       cwd: __dirname,
       instances: 1,
       exec_mode: "fork",
-      watch: false,
+      watch: true, // 启用文件监听，文件变动时自动重启
+      watch_delay: 1000, // 延迟 1 秒后重启，避免频繁重启
+      ignore_watch: [
+        "node_modules",
+        "logs",
+        "output",
+        "cache",
+        "uploads",
+        "*.log",
+        ".git",
+        "dist",
+        "build"
+      ], // 忽略这些文件/目录的变动
       autorestart: true,
       max_memory_restart: "1G",
       error_file: "./logs/pm2-error.log",

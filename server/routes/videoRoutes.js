@@ -15,7 +15,7 @@ const router = express.Router();
 
 /**
  * 创建视频合成任务
- * POST /api/video/create
+ * POST /api-node/video/create
  */
 router.post('/create', async (req, res, next) => {
   try {
@@ -42,7 +42,7 @@ router.post('/create', async (req, res, next) => {
 
 /**
  * 查询任务状态
- * GET /api/video/:taskId/status
+ * GET /api-node/video/:taskId/status
  */
 router.get('/:taskId/status', (req, res, next) => {
   try {
@@ -61,7 +61,7 @@ router.get('/:taskId/status', (req, res, next) => {
 
 /**
  * 获取合成结果（Base64 视频数据）
- * GET /api/video/:taskId/result
+ * GET /api-node/video/:taskId/result
  */
 router.get('/:taskId/result', (req, res, next) => {
   try {
@@ -84,7 +84,7 @@ router.get('/:taskId/result', (req, res, next) => {
 
 /**
  * 下载视频文件
- * GET /api/video/:taskId/download
+ * GET /api-node/video/:taskId/download
  */
 router.get('/:taskId/download', (req, res, next) => {
   try {
@@ -110,7 +110,7 @@ router.get('/:taskId/download', (req, res, next) => {
 
 /**
  * 删除任务
- * DELETE /api/video/:taskId
+ * DELETE /api-node/video/:taskId
  */
 router.delete('/:taskId', (req, res, next) => {
   try {
