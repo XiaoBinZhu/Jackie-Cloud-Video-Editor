@@ -9,36 +9,73 @@ import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
 import ffmpegInstaller from '@ffmpeg-installer/ffmpeg';
+import ffprobeInstaller from '@ffprobe-installer/ffprobe';
 import { SERVER_CONFIG, DIRS } from './config/config.js';
 import videoRoutes from './routes/videoRoutes.js';
 import mergeRoutes from './routes/mergeRoutes.js';
 import { errorHandler, notFoundHandler } from './middleware/errorHandler.js';
 import { logger } from './utils/logger.js';
 import { startCleanupScheduler } from './utils/cleanup.js';
+import { execSync } from 'child_process';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// 初始化 FFmpeg - 使用 Node.js 包中的 FFmpeg
-const ffmpegPath = ffmpegInstaller.path;
-const ffprobePath = ffmpegPath.replace('ffmpeg', 'ffprobe');
+// 优先使用系统已安装的 FFmpeg/FFprobe，没有则回退到 @ffmpeg-installer / @ffprobe-installer
+const detectSystemBinary = (name) => {
+  try {
+    const binPath = execSync(`which ${name}`, { stdio: ['pipe', 'pipe', 'ignore'] }).toString().trim();
+    if (binPath && fs.existsSync(binPath)) {
+      // 简单验证一次版本，确保可执行
+      execSync(`${binPath} -version`, { stdio: ['ignore', 'pipe', 'pipe'] });
+      return binPath;
+    }
+  } catch (err) {
+    return null;
+  }
+  return null;
+};
 
-// 设置环境变量，让 FFCreatorLite 使用我们的 FFmpeg
+const isWindows = process.platform === 'win32';
+const systemFfmpeg = isWindows ? null : detectSystemBinary('ffmpeg');
+const systemFfprobe = isWindows ? null : detectSystemBinary('ffprobe');
+
+let ffmpegPath = systemFfmpeg;
+let ffprobePath = systemFfprobe;
+let ffmpegVersion = '未知';
+let usingSystem = false;
+
+if (ffmpegPath && ffprobePath) {
+  usingSystem = true;
+  ffmpegVersion = execSync(`${ffmpegPath} -version`, { stdio: ['pipe', 'pipe', 'pipe'] }).toString().split('\n')[0] || '未知';
+  logger.info(`[FFmpeg] 检测到系统已安装版本: ${ffmpegPath}`);
+  logger.info(`[FFmpeg] 版本信息: ${ffmpegVersion}`);
+} else {
+  // Windows 或未检测到系统 FFmpeg 时，回退到 npm 安装的二进制
+  ffmpegPath = ffmpegInstaller.path;
+  ffprobePath = ffprobeInstaller?.path || ffmpegPath.replace('ffmpeg', 'ffprobe');
+  ffmpegVersion = ffmpegInstaller.version || '未知';
+
+  // 验证 FFmpeg / FFprobe 文件是否存在
+  const missing = [];
+  if (!fs.existsSync(ffmpegPath)) missing.push(`FFmpeg 文件不存在: ${ffmpegPath}`);
+  if (!fs.existsSync(ffprobePath)) missing.push(`FFprobe 文件不存在: ${ffprobePath}`);
+  if (missing.length) {
+    missing.forEach(msg => logger.error(msg));
+    throw new Error(missing.join(' | '));
+  }
+
+  logger.info(`[FFmpeg] 使用 npm 包中的二进制: ${ffmpegPath}`);
+  logger.info(`[FFmpeg] 版本: ${ffmpegVersion}`);
+}
+
+// 设置环境变量，让 FFCreatorLite 使用已选定的 FFmpeg/FFprobe
 process.env.FFMPEG_PATH = ffmpegPath;
 process.env.FFPROBE_PATH = ffprobePath;
 
 // 将 FFmpeg 目录添加到 PATH，确保可以找到
 const ffmpegDir = path.dirname(ffmpegPath);
 process.env.PATH = `${ffmpegDir}${path.delimiter}${process.env.PATH}`;
-
-// 验证 FFmpeg 文件是否存在
-if (!fs.existsSync(ffmpegPath)) {
-  logger.error(`FFmpeg 文件不存在: ${ffmpegPath}`);
-  throw new Error(`FFmpeg 文件不存在: ${ffmpegPath}`);
-}
-
-logger.info(`使用 Node.js 包中的 FFmpeg: ${ffmpegPath}`);
-logger.info(`FFmpeg 版本: ${ffmpegInstaller.version || '未知'}`);
 
 const app = express();
 
@@ -66,7 +103,8 @@ app.get('/node-api/health', (req, res) => {
     timestamp: new Date().toISOString(),
     ffmpeg: {
       path: ffmpegPath,
-      version: ffmpegInstaller.version || '未知'
+      version: ffmpegVersion,
+      source: usingSystem ? 'system' : 'npm-installer'
     }
   });
 });
