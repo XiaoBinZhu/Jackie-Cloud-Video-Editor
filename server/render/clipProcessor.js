@@ -226,12 +226,14 @@ export async function processVideoClip(clip, canvasWidth, canvasHeight, segmentS
 
   // 创建 FFVideo 实例，不设置 width 和 height，只设置位置
   // 然后使用 setWH 来设置尺寸
+  const clipHasAudio = clip.hasAudio !== false;
+
   const video = new FFVideo({
     path: absolutePath,
     x: finalVideoX,
     y: finalVideoY,
     ss: assetOffset,
-    audio: true, // 显式启用音轨，确保渲染阶段保留片段音频
+    audio: clipHasAudio, // 显式启用音轨，确保渲染阶段保留片段音频
   });
 
   // 使用 setWH 方法设置尺寸（这是 FFCreatorLite 推荐的方式）
@@ -250,7 +252,7 @@ export async function processVideoClip(clip, canvasWidth, canvasHeight, segmentS
         width: finalVideoWidth,
         height: finalVideoHeight,
         ss: assetOffset,
-        audio: true, // 备用构造同样启用音轨
+        audio: clipHasAudio, // 备用构造同样启用音轨
       });
       videoWithSize.setDuration(segmentDuration);
       logger.warn(`[视频处理] ⚠️ 使用构造函数参数设置尺寸: ${finalVideoWidth}x${finalVideoHeight}`);

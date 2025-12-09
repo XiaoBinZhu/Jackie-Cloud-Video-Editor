@@ -1,3 +1,5 @@
+import util from 'util';
+
 /**
  * 结构化日志工具
  * 支持不同日志级别和格式化输出
@@ -26,6 +28,37 @@ const getLogLevel = () => {
 const currentLogLevel = getLogLevel();
 
 /**
+ * 安全序列化附加数据，避免循环引用导致崩溃
+ * @param {any} data
+ * @returns {string}
+ */
+function safeSerialize(data) {
+  if (data === null || data === undefined) return '';
+  if (typeof data !== 'object') return String(data);
+
+  const seen = new WeakSet();
+  try {
+    return JSON.stringify(
+      data,
+      (key, value) => {
+        if (typeof value === 'object' && value !== null) {
+          if (seen.has(value)) return '[Circular]';
+          seen.add(value);
+        }
+        if (typeof value === 'function') {
+          return `[Function ${value.name || 'anonymous'}]`;
+        }
+        return value;
+      },
+      2
+    );
+  } catch (err) {
+    // 回退到 util.inspect，保证不会抛异常
+    return util.inspect(data, { depth: 3, breakLength: 120 });
+  }
+}
+
+/**
  * 格式化日志消息
  * @param {string} level - 日志级别
  * @param {string} message - 日志消息
@@ -37,7 +70,7 @@ function formatLog(level, message, data = null) {
   const prefix = `[${timestamp}] [${LOG_LEVEL_NAMES[level]}]`;
   
   if (data !== null && data !== undefined) {
-    return `${prefix} ${message} ${typeof data === 'object' ? JSON.stringify(data, null, 2) : data}`;
+    return `${prefix} ${message} ${safeSerialize(data)}`;
   }
   
   return `${prefix} ${message}`;

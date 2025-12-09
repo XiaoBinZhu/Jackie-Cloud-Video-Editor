@@ -6,7 +6,7 @@ import fs from 'fs';
 import path from 'path';
 import { downloadFromOSS, processText } from './ossService.js';
 import { getResolution } from '../utils/videoUtils.js';
-import { mergeVideoWithAudio, preprocessVideoForPortrait } from '../render/videoUtils.js';
+import { mergeVideoWithAudio, preprocessVideoForPortrait, hasAudioStream } from '../render/videoUtils.js';
 import { DIRS } from '../config/config.js';
 import { logger } from '../utils/logger.js';
 
@@ -127,6 +127,10 @@ export async function buildTimelineFromSegments(segments, settings, defaultSegme
             tempFiles.push(finalVideoPath);
         }
 
+        // 检测预处理后的文件是否包含音频流，供后续渲染判断
+        const videoHasAudio = await hasAudioStream(finalVideoPath);
+        logger.info(`[片段 ${i + 1}] 视频内音频: ${videoHasAudio ? '存在' : '无'}`);
+
         // 视频默认居中显示，有传参才按传参的算
         const videoTransform = segment.transform || {
             x: 50, // 默认居中
@@ -147,6 +151,7 @@ export async function buildTimelineFromSegments(segments, settings, defaultSegme
                 volume: segment.volume ?? 1,
                 transform: videoTransform
             },
+            hasAudio: videoHasAudio,
             transitions: segment.transitions || {},
             fitMode: segment.fitMode || fitMode
         });

@@ -142,6 +142,16 @@ export async function renderVideo({
 
     onProgress(10, '正在创建 FFCreator 实例...');
 
+    onProgress(15, '正在解析时间线...');
+
+    // 收集所有片段
+    const { allClips, audioClips } = collectClipsFromTimeline(timeline);
+
+    // 识别是否存在可用音频：独立音轨或视频自带音频
+    const hasVideoAudio = allClips.some(clip => clip.clipType === 'VIDEO' && clip.hasAudio !== false);
+    const hasAnyAudio = hasVideoAudio || audioClips.length > 0;
+    taskLogger.info(`音频状态: 视频音频=${hasVideoAudio ? '有' : '无'}, 独立音轨=${audioClips.length}, 音频处理=${hasAnyAudio ? '开启' : '关闭'}`);
+
     // 创建 FFCreatorLite 实例
     const creator = new FFCreator({
       cacheDir,
@@ -151,13 +161,8 @@ export async function renderVideo({
       height: canvasHeight,
       fps,
       debug: false,
-      audio: true,
+      audio: hasAnyAudio,
     });
-
-    onProgress(15, '正在解析时间线...');
-
-    // 收集所有片段
-    const { allClips, audioClips } = collectClipsFromTimeline(timeline);
 
     // 计算所有时间点并去重排序
     const sortedTimePoints = calculateTimePoints(allClips);
@@ -182,7 +187,11 @@ export async function renderVideo({
     });
 
     // 音频已在片段阶段与视频合并，这里无需额外处理
-    onProgress(30, '音频已与视频合并，跳过独立音轨处理');
+    if (hasAnyAudio) {
+      onProgress(30, '音频已与视频合并，跳过独立音轨处理');
+    } else {
+      onProgress(30, '未检测到可用音频，将输出静音视频');
+    }
 
     onProgress(35, '正在启动渲染引擎...');
 

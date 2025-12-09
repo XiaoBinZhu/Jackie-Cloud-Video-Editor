@@ -69,6 +69,42 @@ export function getVideoDimensions(videoPath) {
 }
 
 /**
+ * 检测本地视频文件是否包含音频流
+ * @param {string} videoPath - 视频文件路径
+ * @returns {Promise<boolean>} 是否存在音频流
+ */
+export function hasAudioStream(videoPath) {
+  return new Promise((resolve) => {
+    try {
+      if (!videoPath || videoPath.startsWith('http://') || videoPath.startsWith('https://')) {
+        resolve(false);
+        return;
+      }
+
+      if (!fs.existsSync(videoPath)) {
+        logger.warn(`[音频检测] 文件不存在: ${videoPath}`);
+        resolve(false);
+        return;
+      }
+
+      ffmpeg.ffprobe(videoPath, (err, metadata) => {
+        if (err) {
+          logger.warn(`[音频检测] 获取元数据失败: ${err.message}`);
+          resolve(false);
+          return;
+        }
+
+        const hasAudio = metadata.streams?.some(stream => stream.codec_type === 'audio');
+        resolve(Boolean(hasAudio));
+      });
+    } catch (error) {
+      logger.warn(`[音频检测] 异常: ${error.message}`);
+      resolve(false);
+    }
+  });
+}
+
+/**
  * 从时间线中获取第一个视频的实际尺寸作为画布尺寸
  * @param {Object} timeline - 时间线对象
  * @returns {Promise<{width: number, height: number}|null>} 画布尺寸
@@ -281,18 +317,7 @@ export function preprocessVideoForPortrait(inputPath, canvasWidth, canvasHeight,
       // 获取视频尺寸和音频流信息
       Promise.all([
         getVideoDimensions(inputPath),
-        new Promise((resolveProbe) => {
-          // 检查视频是否有音频流
-          ffmpeg.ffprobe(inputPath, (err, metadata) => {
-            if (err) {
-              logger.warn(`[预处理] 无法获取视频元数据: ${err.message}`);
-              resolveProbe(false); // 假设没有音频
-              return;
-            }
-            const hasAudio = metadata.streams?.some(stream => stream.codec_type === 'audio');
-            resolveProbe(hasAudio);
-          });
-        })
+        hasAudioStream(inputPath)
       ]).then(([videoDimensions, hasAudio]) => {
         if (!videoDimensions) {
           logger.warn(`[预处理] 无法获取视频尺寸，跳过预处理: ${inputPath}`);
